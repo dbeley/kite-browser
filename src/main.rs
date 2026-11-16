@@ -8,6 +8,7 @@ mod config;
 mod engine;
 mod shell;
 mod store;
+mod wm;
 mod ws;
 
 use std::time::Instant;
@@ -31,6 +32,8 @@ struct Args {
     height: Option<u32>,
     incognito: bool,
     no_restore: bool,
+    decorations: Option<bool>,
+    fullscreen: bool,
     selftest: bool,
     bench: bool,
     url: Option<String>,
@@ -51,6 +54,8 @@ options:
       --height N       window height
   -i, --incognito      start with a private profile
       --no-restore     do not restore the previous session
+      --decorated      keep the window frame (default: decorations = false)
+      --fullscreen     start fullscreen (overrides config)
       --selftest       launch, verify the UI layer, exit
       --bench          measure cold start to first paint, exit
   -h, --help           this text
@@ -70,6 +75,8 @@ fn parse_args() -> Args {
         height: None,
         incognito: false,
         no_restore: false,
+        decorations: None,
+        fullscreen: false,
         selftest: false,
         bench: false,
         url: None,
@@ -96,6 +103,8 @@ fn parse_args() -> Args {
             "--height" => a.height = take(&arg).parse().ok(),
             "-i" | "--incognito" => a.incognito = true,
             "--no-restore" => a.no_restore = true,
+            "--decorated" => a.decorations = Some(true),
+            "--fullscreen" => a.fullscreen = true,
             "--selftest" => a.selftest = true,
             "--bench" => a.bench = true,
             other if other.starts_with('-') && other.len() > 1 => {
@@ -113,7 +122,11 @@ fn main() {
     let started = Instant::now();
 
     let cfg_path = args.config.clone().unwrap_or_else(config::config_path);
-    let system_cfg = if args.config.is_none() { config::system_config_path() } else { None };
+    let system_cfg = if args.config.is_none() {
+        config::system_config_path()
+    } else {
+        None
+    };
     if !cfg_path.exists() && system_cfg.is_none() {
         if let Some(parent) = cfg_path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -133,7 +146,11 @@ fn main() {
     let state_dir = args
         .state
         .clone()
-        .or_else(|| std::env::var("KITE_HOME").ok().map(std::path::PathBuf::from))
+        .or_else(|| {
+            std::env::var("KITE_HOME")
+                .ok()
+                .map(std::path::PathBuf::from)
+        })
         .unwrap_or_else(config::state_dir);
     let mut store = Store::load(state_dir.clone());
 
@@ -155,12 +172,16 @@ fn main() {
         }
     }
     let boot_url = boot_url.unwrap_or_else(|| {
-        cfg.get_str("start_page").unwrap_or("about:blank").to_string()
+        cfg.get_str("start_page")
+            .unwrap_or("about:blank")
+            .to_string()
     });
 
     if args.incognito && !args.state.is_some() {
         // Isolate the engine profile for the run, keep the config.
-        store = Store::load(std::env::temp_dir().join(format!("kite-incognito-{}", std::process::id())));
+        store = Store::load(
+            std::env::temp_dir().join(format!("kite-incognito-{}", std::process::id())),
+        );
     }
 
     let profile = state_dir.join("engine-profile");
@@ -174,9 +195,19 @@ fn main() {
         url: boot_url.clone(),
         port: args.port,
         extra_args: cfg.extra_args(),
-        width: args.width.or(cfg.get_i64("width").map(|v| v as u32)).unwrap_or(1280),
-        height: args.height.or(cfg.get_i64("height").map(|v| v as u32)).unwrap_or(820),
+        width: args
+            .width
+            .or(cfg.get_i64("width").map(|v| v as u32))
+            .unwrap_or(1280),
+        height: args
+            .height
+            .or(cfg.get_i64("height").map(|v| v as u32))
+            .unwrap_or(820),
         incognito: args.incognito,
+        decorations: args
+            .decorations
+            .unwrap_or_else(|| cfg.get_bool("decorations").unwrap_or(false)),
+        fullscreen: args.fullscreen || cfg.get_bool("fullscreen").unwrap_or(false),
     };
 
     let engine = match Engine::launch(&engine_opts) {
@@ -225,7 +256,9 @@ fn main() {
         eprintln!(
             "kite: engine ready in {launch_ms} ms (devtools port {}), first paint {} ms",
             devtools_port,
-            first_paint.map(|d| d.as_millis().to_string()).unwrap_or_else(|| "?".into())
+            first_paint
+                .map(|d| d.as_millis().to_string())
+                .unwrap_or_else(|| "?".into())
         );
     }
 
@@ -242,7 +275,11 @@ fn main() {
             "{{\"launch_ms\":{},\"first_paint_ms\":{},\"ui_rss_kb\":{},\"pid\":{}}}",
             launch_ms,
             first_paint.map(|d| d.as_millis()).unwrap_or(0),
-            if state.is_empty() { "0".to_string() } else { state },
+            if state.is_empty() {
+                "0".to_string()
+            } else {
+                state
+            },
             std::process::id()
         );
         return;
@@ -277,7 +314,11 @@ fn key_spec(k: &str) -> (String, String, i64, String) {
                 other.to_string(),
                 format!("Key{up}"),
                 up as i64,
-                if ch.is_ascii_uppercase() { other.to_string() } else { ch.to_string() },
+                if ch.is_ascii_uppercase() {
+                    other.to_string()
+                } else {
+                    ch.to_string()
+                },
             );
         }
     };
@@ -293,9 +334,10 @@ fn selftest(shell: &mut Shell, launch_ms: u128, first_paint: Option<std::time::D
         .unwrap_or(1500);
     shell.pump(std::time::Duration::from_millis(wait_ms));
     let session = shell.tabs.first().map(|t| t.session.clone());
-    let probe = shell
-        .cdp
-        .eval(session.as_deref(), "typeof window.__kite === 'object' ? window.__kite.version : 'missing'");
+    let probe = shell.cdp.eval(
+        session.as_deref(),
+        "typeof window.__kite === 'object' ? window.__kite.version : 'missing'",
+    );
     let dom = shell.cdp.eval(
         session.as_deref(),
         "JSON.stringify({title: document.title, href: location.href, text: (document.body ? document.body.innerText : '').slice(0,60), kids: document.body ? document.body.children.length : -1, kite: !!window.__kite, state: (window.__kite && window.__kite._state) ? window.__kite._state() : null})",
@@ -304,9 +346,11 @@ fn selftest(shell: &mut Shell, launch_ms: u128, first_paint: Option<std::time::D
         session.as_deref(),
         "(window.__kite && window.__kite._cfg) ? JSON.stringify(window.__kite._cfg()) : 'no hook'",
     );
-    let shot = shell
-        .cdp
-        .call(session.as_deref(), "Page.captureScreenshot", serde_json::json!({ "format": "png" }));
+    let shot = shell.cdp.call(
+        session.as_deref(),
+        "Page.captureScreenshot",
+        serde_json::json!({ "format": "png" }),
+    );
     match shot {
         Ok(v) => {
             if let Some(data) = v.get("data").and_then(|d| d.as_str()) {
@@ -326,14 +370,28 @@ fn selftest(shell: &mut Shell, launch_ms: u128, first_paint: Option<std::time::D
     println!("  engine ready : {launch_ms} ms");
     println!(
         "  first paint  : {} ms",
-        first_paint.map(|d| d.as_millis().to_string()).unwrap_or_else(|| "n/a".into())
+        first_paint
+            .map(|d| d.as_millis().to_string())
+            .unwrap_or_else(|| "n/a".into())
     );
     println!("  ui layer     : {probe:?}");
-    println!("  dom          : {}", dom.map(|v| v.to_string()).unwrap_or_else(|e| format!("error: {e}")));
-    println!("  keymap       : {}", cfg.map(|v| v.to_string()).unwrap_or_else(|e| format!("error: {e}")));
+    println!(
+        "  dom          : {}",
+        dom.map(|v| v.to_string())
+            .unwrap_or_else(|e| format!("error: {e}"))
+    );
+    println!(
+        "  keymap       : {}",
+        cfg.map(|v| v.to_string())
+            .unwrap_or_else(|e| format!("error: {e}"))
+    );
     if let Ok(expr) = std::env::var("KITE_EVAL") {
         let r = shell.cdp.eval(session.as_deref(), &expr);
-        println!("  eval         : {}", r.map(|v| v.to_string()).unwrap_or_else(|e| format!("error: {e}")));
+        println!(
+            "  eval         : {}",
+            r.map(|v| v.to_string())
+                .unwrap_or_else(|e| format!("error: {e}"))
+        );
     }
     // Real key path: CDP input events go through the browser's own pipeline,
     // exactly like an X11 keystroke. Used to test the keymap end to end.
@@ -348,7 +406,10 @@ fn selftest(shell: &mut Shell, launch_ms: u128, first_paint: Option<std::time::D
                 "nativeVirtualKeyCode": spec.2,
                 "text": spec.3,
             });
-            if let Err(e) = shell.cdp.call(session.as_deref(), "Input.dispatchKeyEvent", params) {
+            if let Err(e) = shell
+                .cdp
+                .call(session.as_deref(), "Input.dispatchKeyEvent", params)
+            {
                 println!("  keys         : {key} failed: {e}");
             }
             let up = serde_json::json!({
@@ -357,7 +418,9 @@ fn selftest(shell: &mut Shell, launch_ms: u128, first_paint: Option<std::time::D
                 "code": spec.1,
                 "windowsVirtualKeyCode": spec.2,
             });
-            let _ = shell.cdp.call(session.as_deref(), "Input.dispatchKeyEvent", up);
+            let _ = shell
+                .cdp
+                .call(session.as_deref(), "Input.dispatchKeyEvent", up);
             std::thread::sleep(std::time::Duration::from_millis(60));
         }
         // Commands travel JS -> binding -> controller, so events must be pumped
@@ -367,11 +430,23 @@ fn selftest(shell: &mut Shell, launch_ms: u128, first_paint: Option<std::time::D
             session.as_deref(),
             "JSON.stringify({mode:(window.__kite&&window.__kite._state)?window.__kite._state().mode:'?', err:(window.__kite&&window.__kite._state)?window.__kite._state().err:null, key:(window.__kite&&window.__kite._state)?window.__kite._state().key:null, hints:document.querySelectorAll('.h').length, palette:(window.__kite&&window.__kite._palette)?window.__kite._palette():null, scrollY:Math.round(window.scrollY)})",
         );
-        println!("  keys         : {keys} -> {}", after.map(|v| v.to_string()).unwrap_or_else(|e| format!("error: {e}")));
+        println!(
+            "  keys         : {keys} -> {}",
+            after
+                .map(|v| v.to_string())
+                .unwrap_or_else(|e| format!("error: {e}"))
+        );
     }
     let tabs = shell.tabs.len();
     println!("  tabs         : {tabs}");
-    println!("  active url   : {}", shell.tabs.first().map(|t| t.url.clone()).unwrap_or_default());
+    println!(
+        "  active url   : {}",
+        shell
+            .tabs
+            .first()
+            .map(|t| t.url.clone())
+            .unwrap_or_default()
+    );
     let ok = matches!(probe, Ok(serde_json::Value::String(ref s)) if s == UI_VERSION);
     println!("  result       : {}", if ok { "OK" } else { "FAIL" });
     if !ok {

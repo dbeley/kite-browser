@@ -12,6 +12,12 @@ start_page = "about:blank"
 search_engine = "ddg"
 width = 1280
 height = 820
+# Hide the engine's window frame. On Wayland this disables Chromium's own
+# title bar; on X11 kite asks the window manager to drop the frame.
+# Set it to true if you want a normal decorated window.
+decorations = false
+# Start fullscreen. The one way to guarantee no frame on any compositor.
+fullscreen = false
 # auto: bar appears on load/command/hint, hides otherwise (best for small screens)
 bar = "auto"
 status = true
@@ -164,13 +170,27 @@ impl Default for Config {
 
 impl Config {
     pub fn from_toml(text: &str) -> Result<Config, String> {
-        let parsed: toml::Value = text.parse::<toml::Value>().map_err(|e| format!("config: {e}"))?;
+        let parsed: toml::Value = text
+            .parse::<toml::Value>()
+            .map_err(|e| format!("config: {e}"))?;
         let as_json: Value = serde_json::to_value(parsed).map_err(|e| e.to_string())?;
         let obj = as_json.as_object().cloned().unwrap_or_default();
         Ok(Config {
-            general: obj.get("general").and_then(|v| v.as_object()).cloned().unwrap_or_default(),
-            search: obj.get("search").and_then(|v| v.as_object()).cloned().unwrap_or_default(),
-            keys: obj.get("keys").and_then(|v| v.as_object()).cloned().unwrap_or_default(),
+            general: obj
+                .get("general")
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default(),
+            search: obj
+                .get("search")
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default(),
+            keys: obj
+                .get("keys")
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default(),
             raw: as_json,
             path: None,
         })
@@ -178,18 +198,27 @@ impl Config {
 
     /// Load defaults, then the system config (NixOS module, /etc/xdg), then the
     /// user's file on top — standard XDG precedence.
-    pub fn load(system: Option<&std::path::Path>, user: &std::path::Path) -> Result<Config, String> {
+    pub fn load(
+        system: Option<&std::path::Path>,
+        user: &std::path::Path,
+    ) -> Result<Config, String> {
         let mut raw = Config::from_toml(DEFAULT_CONFIG)?.raw;
         if let Some(sys) = system {
             if sys.exists() {
-                let text = std::fs::read_to_string(sys).map_err(|e| format!("{}: {e}", sys.display()))?;
-                let v: toml::Value = text.parse::<toml::Value>().map_err(|e| format!("{}: {e}", sys.display()))?;
+                let text =
+                    std::fs::read_to_string(sys).map_err(|e| format!("{}: {e}", sys.display()))?;
+                let v: toml::Value = text
+                    .parse::<toml::Value>()
+                    .map_err(|e| format!("{}: {e}", sys.display()))?;
                 raw = deep_merge(raw, serde_json::to_value(v).map_err(|e| e.to_string())?);
             }
         }
         if user.exists() {
-            let text = std::fs::read_to_string(user).map_err(|e| format!("{}: {e}", user.display()))?;
-            let v: toml::Value = text.parse::<toml::Value>().map_err(|e| format!("{}: {e}", user.display()))?;
+            let text =
+                std::fs::read_to_string(user).map_err(|e| format!("{}: {e}", user.display()))?;
+            let v: toml::Value = text
+                .parse::<toml::Value>()
+                .map_err(|e| format!("{}: {e}", user.display()))?;
             raw = deep_merge(raw, serde_json::to_value(v).map_err(|e| e.to_string())?);
         }
         let mut c = Config::from_toml(&toml::to_string(&raw).map_err(|e| e.to_string())?)?;
@@ -213,7 +242,11 @@ impl Config {
         self.general
             .get("extra_engine_args")
             .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -319,7 +352,11 @@ fn canonical_angle(inner: &str) -> String {
         if lower.starts_with("ctrl-") || lower.starts_with("c-") {
             prefix.push_str("C-");
             rest = &rest[rest.find('-').unwrap() + 1..];
-        } else if lower.starts_with("alt-") || lower.starts_with("a-") || lower.starts_with("meta-") || lower.starts_with("m-") {
+        } else if lower.starts_with("alt-")
+            || lower.starts_with("a-")
+            || lower.starts_with("meta-")
+            || lower.starts_with("m-")
+        {
             prefix.push_str("A-");
             rest = &rest[rest.find('-').unwrap() + 1..];
         } else if lower.starts_with("shift-") || lower.starts_with("s-") {
@@ -380,5 +417,7 @@ pub fn state_dir() -> std::path::PathBuf {
 }
 
 pub fn home() -> std::path::PathBuf {
-    std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("/"))
+    std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/"))
 }

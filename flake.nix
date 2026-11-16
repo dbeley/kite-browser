@@ -45,6 +45,7 @@
             imagemagick
             i3
             wmctrl
+            xprop
             xclip
             jq
           ];

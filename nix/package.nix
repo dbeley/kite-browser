@@ -1,4 +1,4 @@
-{ lib, rustPlatform, makeWrapper, chromium, xclip, wl-clipboard, installShellFiles }:
+{ lib, rustPlatform, makeWrapper, chromium, xclip, wl-clipboard, xdotool, xprop, installShellFiles }:
 
 rustPlatform.buildRustPackage {
   pname = "kite";
@@ -16,11 +16,12 @@ rustPlatform.buildRustPackage {
 
   nativeBuildInputs = [ makeWrapper installShellFiles ];
 
-  # Chromium, and the clipboard helpers, are runtime deps: kite talks to the
-  # engine as a separate process, so they must be reachable on PATH.
+  # Chromium, the clipboard helpers and the X11 frame tools are runtime deps:
+  # kite talks to the engine as a separate process, so they must be on PATH.
+  # xdotool + xprop are only touched on an X11 session, to drop the WM frame.
   postInstall = ''
     wrapProgram $out/bin/kite \
-      --suffix PATH : ${lib.makeBinPath [ chromium xclip wl-clipboard ]}
+      --suffix PATH : ${lib.makeBinPath [ chromium xclip wl-clipboard xdotool xprop ]}
 
     install -Dm644 ${../nix/kite.desktop} $out/share/applications/kite.desktop
     install -Dm644 ${../nix/kite.svg} $out/share/icons/hicolor/scalable/apps/kite.svg
