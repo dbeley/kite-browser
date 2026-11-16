@@ -10,7 +10,7 @@ kite moves that layer out of the way:
 
 | Layer | qutebrowser | kite |
 | --- | --- | --- |
-| Shell language | Python (CPython + ~1 MB of .pyc) | Rust, 837 KB static binary |
+| Shell language | Python (CPython + ~1 MB of .pyc) | Rust, 857 KB static binary |
 | UI toolkit | Qt widgets + QtWebEngine | none in the shell process |
 | Key handling | Qt event → Python → command registry | Chromium key path → one JS handler |
 | Engine | QtWebEngine (Chromium, embedded) | system Chromium (separate process) |
@@ -76,14 +76,20 @@ nix develop
 
 ## What to expect on weak hardware
 
-- First paint is dominated by Chromium's startup, not by kite. Measured on this
-  2-core test box: 0.37 s from exec to a mapped window, engine debug port up at
-  ~0.4 s, first paint ~0.2-0.3 s after that. The shell contributes milliseconds.
-- Shell memory is flat: **3.2 MB** RSS, regardless of tab count. For comparison,
-  qutebrowser's shell process measured 139.9 MB on the same box in the same way.
-- Total memory is Chromium's: nine processes, 380 MB PSS for one static page
-  without GPU acceleration. Three tabs of a heavy app will cost what they cost in
-  any Chromium browser.
+- Cold start is dominated by Chromium's startup, not by kite. Measured on this
+  4-core test box (Xvfb, software raster, Nix store binary): **1.35 s** from exec
+  to a mapped window, engine debug port up at ~1.5 s, first paint ~1.0 s after
+  that. The shell's own work before the engine is up is a config read and a
+  socket; everything else is Chromium finding its profile and creating a window.
+- Shell memory is flat: **11 MB** RSS (9.5 MB PSS), 5 threads, regardless of tab
+  count. For comparison, qutebrowser's shell process measured 139.9 MB on an
+  earlier 2-core box in the same way — the ratio is the point, not the digits.
+- The figures previously written here (0.37 s, 3.2 MB) came from a smaller,
+  older machine and are not comparable with the ones above; they are kept only
+  in this note so nobody mixes them up.
+- Total memory is Chromium's: nine processes, **422 MB** PSS (850 MB summed RSS)
+  for one static page without GPU acceleration. Three tabs of a heavy app will
+  cost what they cost in any Chromium browser.
 - Scrolling and typing are page-raster bound. If those feel slow, the wins are
   `--disable-accelerated-2d-canvas`, reducing zoom, and turning images off
   (`:images`).

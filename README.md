@@ -19,7 +19,7 @@ toolbar, and no window frame.
 | | qutebrowser | kite |
 | --- | --- | --- |
 | Engine | QtWebEngine (Chromium, embedded) | system Chromium, separate process |
-| Shell | Python + Qt | Rust, one 837 KB binary |
+| Shell | Python + Qt | Rust, one 857 KB binary |
 | Keys | Qt event → Python command registry | Chromium key path → one JS handler |
 | UI | Qt widgets | shadow-DOM overlay: one bottom status line |
 | NixOS | package | package + flake + `programs.kite` module |
@@ -247,7 +247,7 @@ Defaults, all remappable. `?` shows the live list.
 
 ## Performance
 
-Measured on the machine this was developed on — 2 cores, 3.8 GB RAM, software
+Measured on the machine this was developed on — 4 cores, 7.8 GB RAM, software
 rasterisation under Xvfb, which is *slower* than the ARM boxes this targets
 because there is no GPU acceleration at all. Method and full numbers in
 [`docs/perf.md`](docs/perf.md); reproduce with `./dev/bench.sh`.
@@ -258,23 +258,27 @@ same page — `dev/bench.sh` and `dev/bench-qutebrowser.sh`:
 
 | metric | kite | qutebrowser 3.7 (QtWebEngine) |
 | --- | --- | --- |
-| shell process RSS | **3.2 MB** | 139.9 MB |
-| time from exec to a mapped window | **0.37 s** | 0.98 s |
+| shell process RSS | **11 MB** | 140 MB |
+| time from exec to a mapped window | **1.35 s** | 0.98 s* |
 | processes in the browser tree | 9 (Chromium) | not captured* |
-| total PSS, whole tree | 380 MB | not captured* |
+| total PSS, whole tree | 422 MB | not captured* |
 
-\* The harness reported a single process for qutebrowser, so its renderer
-processes are missing from the sum. I am not quoting a total for it rather than
-publishing a number I cannot defend. Internally, kite reports engine-ready at
-~0.4 s and first paint ~0.2-0.3 s after that (`KITE_TIMING=1`).
+\* The qutebrowser column was measured on an earlier 2-core box with
+`dev/bench-qutebrowser.sh` and was **not** re-run here (it is not installed), so
+the start-time row is not a same-box comparison — treat it as indicative and the
+memory ratio, which is a language-and-toolkit difference, as the robust part.
+Internally, kite reports engine-ready at ~1.5 s and first paint ~1.0 s after
+that (`KITE_TIMING=1`); the window is mapped at 1.35 s.
 
-What this does and does not show: the **shell** is roughly 40× lighter and starts
-about 2.6× sooner. The **page** costs the same, because it is the same engine —
-380 MB of PSS for nine Chromium processes running without GPU acceleration is
-Chromium's bill, not kite's.
+What this does and does not show: the **shell** is roughly 12× lighter, which is
+what deleting Python and Qt buys. The **page** costs the same, because it is the
+same engine — 422 MB of PSS for nine Chromium processes running without GPU
+acceleration is Chromium's bill, not kite's. Cold start is over a second on this
+box and most of it is Chromium: kite's own work before the engine is up is a
+config read and a socket.
 
 The honest summary: **the shell is free, the engine is not.** kite's own process
-stays under 10 MB no matter how many tabs are open, and keys never leave the
+stays around 11 MB no matter how many tabs are open, and keys never leave the
 page. But a Chromium renderer costs what it costs, and no shell above it changes
 that. If your slow machine struggles with Chromium pages, the fix is fewer
 renderers (`--renderer-process-limit`, already set), a smaller V8 heap (already
