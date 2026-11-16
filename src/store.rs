@@ -54,6 +54,9 @@ pub struct Store {
     pub history: Vec<HistoryEntry>,
     pub bookmarks: Vec<Bookmark>,
     pub session: Option<Session>,
+    /// Recently closed windows, newest last. Survives a restart so `u` can
+    /// bring back a window that was closed even after kite exited.
+    pub closed: Vec<SessionTab>,
 }
 
 const HISTORY_CAP: usize = 8000;
@@ -82,8 +85,29 @@ impl Store {
             history: read_json(&dir.join("history.json")).unwrap_or_default(),
             bookmarks: read_json(&dir.join("bookmarks.json")).unwrap_or_default(),
             session: read_json(&dir.join("session.json")),
+            closed: read_json(&dir.join("closed.json")).unwrap_or_default(),
             dir,
         }
+    }
+
+    pub fn save_closed(&mut self, tabs: &[SessionTab]) {
+        self.closed = tabs.to_vec();
+        if let Ok(json) = serde_json::to_string(&self.closed) {
+            let tmp = self.dir.join("closed.json.tmp");
+            if std::fs::write(&tmp, json).is_ok() {
+                let _ = std::fs::rename(&tmp, self.dir.join("closed.json"));
+            }
+        }
+    }
+
+    /// Take the newest closed window off the stack. Used at boot when the
+    /// session left nothing behind, so a quit from the last window is undoable
+    /// on the next launch too.
+    pub fn pop_closed(&mut self) -> Option<SessionTab> {
+        let tab = self.closed.pop()?;
+        let rest = self.closed.clone();
+        self.save_closed(&rest);
+        Some(tab)
     }
 
     pub fn visit(&mut self, url: &str, title: &str) {
@@ -175,5 +199,25 @@ impl Store {
 
     pub fn bookmarks_json(&self) -> Value {
         json!(self.bookmarks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closed_stack_survives_a_reload() {
+        let dir = std::env::temp_dir().join(format!("kite-store-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Store::load(dir.clone());
+        s.save_closed(&[SessionTab {
+            url: "https://a.example".into(),
+            title: "a".into(),
+        }]);
+        let again = Store::load(dir.clone());
+        assert_eq!(again.closed.len(), 1);
+        assert_eq!(again.closed[0].url, "https://a.example");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

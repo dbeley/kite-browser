@@ -51,12 +51,20 @@ impl Cdp {
     }
 
     fn send(&self, payload: &str) -> Result<(), String> {
-        let mut w = self.writer.lock().map_err(|_| "ws lock poisoned".to_string())?;
+        let mut w = self
+            .writer
+            .lock()
+            .map_err(|_| "ws lock poisoned".to_string())?;
         w.send_text(payload).map_err(|e| format!("ws send: {e}"))
     }
 
     /// Blocking call. Events arriving while we wait are queued, not lost.
-    pub fn call(&mut self, session: Option<&str>, method: &str, params: Value) -> Result<Value, String> {
+    pub fn call(
+        &mut self,
+        session: Option<&str>,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
         let id = self.next_id;
         self.next_id += 1;
         let mut msg = json!({ "id": id, "method": method, "params": params });
@@ -97,7 +105,10 @@ impl Cdp {
             }
             if let Some(m) = v.get("method").and_then(|m| m.as_str()) {
                 self.queue.push_back(Event {
-                    session: v.get("sessionId").and_then(|s| s.as_str()).map(str::to_string),
+                    session: v
+                        .get("sessionId")
+                        .and_then(|s| s.as_str())
+                        .map(str::to_string),
                     method: m.to_string(),
                     params: v.get("params").cloned().unwrap_or(Value::Null),
                 });
@@ -115,7 +126,10 @@ impl Cdp {
                 let v: Value = serde_json::from_str(&text).ok()?;
                 let m = v.get("method")?.as_str()?.to_string();
                 Some(Event {
-                    session: v.get("sessionId").and_then(|s| s.as_str()).map(str::to_string),
+                    session: v
+                        .get("sessionId")
+                        .and_then(|s| s.as_str())
+                        .map(str::to_string),
                     method: m,
                     params: v.get("params").cloned().unwrap_or(Value::Null),
                 })
@@ -126,16 +140,26 @@ impl Cdp {
 
     /// Convenience: evaluate JS in a session, returning the JSON value.
     pub fn eval(&mut self, session: Option<&str>, expr: &str) -> Result<Value, String> {
-        let r = self.call(
-            session,
-            "Runtime.evaluate",
-            json!({
-                "expression": expr,
-                "returnByValue": true,
-                "awaitPromise": false,
-                "userGesture": true,
-            }),
-        )?;
+        self.eval_ctx(session, None, expr)
+    }
+
+    /// Evaluate in a specific execution context (the shell's isolated world).
+    pub fn eval_ctx(
+        &mut self,
+        session: Option<&str>,
+        ctx: Option<i64>,
+        expr: &str,
+    ) -> Result<Value, String> {
+        let mut params = json!({
+            "expression": expr,
+            "returnByValue": true,
+            "awaitPromise": false,
+            "userGesture": true,
+        });
+        if let Some(c) = ctx {
+            params["contextId"] = json!(c);
+        }
+        let r = self.call(session, "Runtime.evaluate", params)?;
         if let Some(ex) = r.get("exceptionDetails") {
             if !ex.is_null() {
                 let msg = ex

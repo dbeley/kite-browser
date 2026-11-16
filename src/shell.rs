@@ -2,6 +2,7 @@
 //! history/bookmarks/session, and the privileged side of the in-page command
 //! surface. Everything here is invoked from the UI layer over a CDP binding.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -11,18 +12,39 @@ use crate::config::Config;
 use crate::engine::Engine;
 use crate::store::{SessionTab, Store};
 
+/// Set from a SIGINT/SIGTERM handler: the window manager closing the last
+/// window, `q`, or ^C all leave through the same door so the engine is reaped
+/// and the session is written. Without this a `kill` orphans Chromium on the
+/// profile and the next launch refuses to start.
+static QUIT_SIGNAL: AtomicBool = AtomicBool::new(false);
+
+extern "C" {
+    fn signal(sig: i32, handler: extern "C" fn(i32)) -> usize;
+}
+
+extern "C" fn note_quit_signal(_sig: i32) {
+    QUIT_SIGNAL.store(true, Ordering::SeqCst);
+}
+
+/// Route SIGINT/SIGTERM into the main loop instead of dying mid-write.
+pub fn install_quit_handler() {
+    // SAFETY: the handler only stores into an atomic.
+    unsafe {
+        signal(2, note_quit_signal);
+        signal(15, note_quit_signal);
+    }
+}
+
 pub struct Tab {
     pub id: String,
     pub session: String,
+    /// Execution context of the shell's isolated world in this document.
+    /// `None` until the world exists, or after a navigation destroyed it.
+    pub world: Option<i64>,
     pub url: String,
     pub title: String,
     pub loading: bool,
     pub private: bool,
-}
-
-struct Closed {
-    url: String,
-    title: String,
 }
 
 pub struct Shell {
@@ -32,8 +54,9 @@ pub struct Shell {
     pub store: Store,
     pub tabs: Vec<Tab>,
     pub active: usize,
-    closed: Vec<Closed>,
+    closed: Vec<SessionTab>,
     ui: String,
+    home: String,
     quit: bool,
     session_dirty: bool,
     last_save: Instant,
@@ -47,6 +70,7 @@ impl Shell {
         cfg: Config,
         store: Store,
         ui: String,
+        home: String,
         boot_url: String,
         restore: Vec<String>,
     ) -> Result<Shell, String> {
@@ -57,6 +81,7 @@ impl Shell {
             json!({ "discover": true }),
         )?;
 
+        let closed = store.closed.clone();
         let mut shell = Shell {
             cdp,
             engine,
@@ -64,8 +89,9 @@ impl Shell {
             store,
             tabs: Vec::new(),
             active: 0,
-            closed: Vec::new(),
+            closed,
             ui,
+            home,
             quit: false,
             session_dirty: true,
             last_save: Instant::now(),
@@ -77,6 +103,7 @@ impl Shell {
         shell.tabs.push(Tab {
             id: page,
             session,
+            world: None,
             url,
             title: String::new(),
             loading: true,
@@ -142,40 +169,136 @@ impl Shell {
         Ok((session, url))
     }
 
-    /// Enable the domains we need, register the command binding and install the
-    /// UI script into every future document of this target.
+    /// Enable the domains we need and install the UI in an isolated world.
+    ///
+    /// The UI runs in a world of its own, not the page's: the page cannot see
+    /// `window.__kite`, cannot call `__kiteSend`, and cannot stop the key
+    /// handler. The binding is registered for that context name only, so even
+    /// a page that guesses the name has nothing to call.
     fn prepare(&mut self, idx: usize) -> Result<(), String> {
         let session = self.tabs[idx].session.clone();
         let _ = self.cdp.call(Some(&session), "Page.enable", json!({}));
         let _ = self.cdp.call(Some(&session), "Runtime.enable", json!({}));
         let _ = self.cdp.call(Some(&session), "Log.enable", json!({}));
+        if self.cfg.get_bool("javascript") == Some(false) {
+            // Page scripts off; the shell's own world is not page script.
+            let _ = self.cdp.call(
+                Some(&session),
+                "Emulation.setScriptExecutionDisabled",
+                json!({ "value": true }),
+            );
+        }
         if crate::engine::env_flag("KITE_NO_UI") {
             return Ok(());
         }
         let _ = self.cdp.call(
             Some(&session),
             "Runtime.addBinding",
-            json!({ "name": "__kiteSend" }),
+            json!({ "name": "__kiteSend", "executionContextName": "kite" }),
         );
         let _ = self.cdp.call(
             Some(&session),
             "Page.addScriptToEvaluateOnNewDocument",
-            json!({ "source": self.ui, "runImmediately": true }),
+            json!({ "source": self.ui, "worldName": "kite" }),
         );
-        // The current document predates the injection.
+        // The current document predates the injection: make its world now.
+        self.ensure_world(idx);
         self.inject_now(idx);
         Ok(())
     }
 
+    /// Create the `kite` world for the tab's *current* document and remember
+    /// its context id.
+    ///
+    /// Worlds are per document and `addScriptToEvaluateOnNewDocument` only
+    /// runs in one that already exists, so every navigation needs a fresh
+    /// `createIsolatedWorld`. Idempotent: Chromium hands back the same context
+    /// if the world is already there.
+    fn ensure_world(&mut self, idx: usize) {
+        if self.tabs[idx].world.is_some() {
+            return;
+        }
+        let session = self.tabs[idx].session.clone();
+        let frame = self
+            .cdp
+            .call(Some(&session), "Page.getFrameTree", json!({}))
+            .ok()
+            .and_then(|t| {
+                t.pointer("/frameTree/frame/id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        if frame.is_empty() {
+            return;
+        }
+        if let Ok(w) = self.cdp.call(
+            Some(&session),
+            "Page.createIsolatedWorld",
+            json!({ "frameId": frame, "worldName": "kite", "grantUniveralAccess": false }),
+        ) {
+            self.tabs[idx].world = w.get("executionContextId").and_then(|v| v.as_i64());
+        }
+    }
+
     fn inject_now(&mut self, idx: usize) {
         let session = self.tabs[idx].session.clone();
-        let _ = self.cdp.eval(Some(&session), &self.ui);
+        let ui = self.ui.clone();
+        self.ensure_world(idx);
+        let Some(world) = self.inject_ui(idx, &session, &ui) else {
+            return;
+        };
         let boot = self.boot_payload(idx);
         let push = format!(
             "(()=>{{try{{window.__kite&&window.__kite.boot({})}}catch(e){{}}}})()",
             boot
         );
-        let _ = self.cdp.eval(Some(&session), &push);
+        let _ = self.cdp.eval_ctx(Some(&session), Some(world), &push);
+    }
+
+    /// Evaluate the UI layer in the tab's world, recreating the world once if
+    /// the context id has gone stale (a navigation raced the events).
+    fn inject_ui(&mut self, idx: usize, session: &str, ui: &str) -> Option<i64> {
+        if let Some(world) = self.tabs[idx].world {
+            if self.cdp.eval_ctx(Some(session), Some(world), ui).is_ok() {
+                return Some(world);
+            }
+        }
+        self.tabs[idx].world = None;
+        self.ensure_world(idx);
+        let world = self.tabs[idx].world?;
+        self.cdp.eval_ctx(Some(session), Some(world), ui).ok()?;
+        Some(world)
+    }
+
+    /// Evaluate in the shell's world; a no-op while the world is missing, never
+    /// falls back to the page's world.
+    fn world_eval(&mut self, session: &str, expr: &str) -> Result<Value, String> {
+        let ctx = self
+            .tabs
+            .iter()
+            .find(|t| t.session == session)
+            .and_then(|t| t.world);
+        match ctx {
+            Some(c) => self.cdp.eval_ctx(Some(session), Some(c), expr),
+            None => Ok(Value::Null),
+        }
+    }
+
+    /// For tests: run something in the shell's world of the active tab.
+    pub fn eval_ui(&mut self, expr: &str) -> Result<Value, String> {
+        let Some(session) = self.active_session() else {
+            return Err("no active tab".to_string());
+        };
+        self.world_eval(&session, expr)
+    }
+
+    /// For tests: run something in the page's own world.
+    pub fn eval_page(&mut self, expr: &str) -> Result<Value, String> {
+        let Some(session) = self.active_session() else {
+            return Err("no active tab".to_string());
+        };
+        self.cdp.eval(Some(&session), expr)
     }
 
     fn boot_payload(&self, idx: usize) -> String {
@@ -189,6 +312,7 @@ impl Shell {
                 .get(idx)
                 .map(|t| self.store.is_bookmarked(&t.url))
                 .unwrap_or(false),
+            "home": self.home.clone(),
         });
         serde_json::to_string(&self.cfg.ui_json(extra)).unwrap_or_else(|_| "{}".to_string())
     }
@@ -233,7 +357,7 @@ impl Shell {
             "(()=>{{try{{window.__kite&&window.__kite.state({})}}catch(e){{}}}})()",
             payload
         );
-        let _ = self.cdp.eval(Some(&session), &expr);
+        let _ = self.world_eval(&session, &expr);
     }
 
     pub fn toast(&mut self, msg: &str) {
@@ -244,7 +368,7 @@ impl Shell {
             "(()=>{{try{{window.__kite&&window.__kite.toast({})}}catch(e){{}}}})()",
             json!(msg)
         );
-        let _ = self.cdp.eval(Some(&session), &expr);
+        let _ = self.world_eval(&session, &expr);
     }
 
     pub fn navigate_active(&mut self, url: &str) -> Result<(), String> {
@@ -304,6 +428,7 @@ impl Shell {
                 self.tabs.push(Tab {
                     id,
                     session,
+                    world: None,
                     url: if blank { "about:blank".to_string() } else { u },
                     title: String::new(),
                     loading: true,
@@ -382,6 +507,7 @@ impl Shell {
         self.tabs.push(Tab {
             id: target_id,
             session,
+            world: None,
             url: if blank { "about:blank".to_string() } else { u },
             title: String::new(),
             loading: true,
@@ -419,13 +545,7 @@ impl Shell {
             return;
         }
         let tab = self.tabs.remove(idx);
-        self.closed.push(Closed {
-            url: tab.url.clone(),
-            title: tab.title.clone(),
-        });
-        if self.closed.len() > 20 {
-            self.closed.remove(0);
-        }
+        self.remember_closed(&tab.url, &tab.title);
         let _ = self
             .cdp
             .call(None, "Target.closeTarget", json!({ "targetId": tab.id }));
@@ -442,6 +562,20 @@ impl Shell {
         self.push_state();
     }
 
+    fn remember_closed(&mut self, url: &str, title: &str) {
+        if url.is_empty() || url == "about:blank" {
+            return;
+        }
+        self.closed.push(SessionTab {
+            url: url.to_string(),
+            title: title.to_string(),
+        });
+        if self.closed.len() > 20 {
+            self.closed.remove(0);
+        }
+        self.store.save_closed(&self.closed);
+    }
+
     fn remember_visit(&mut self) {
         if let Some(t) = self.tabs.get(self.active) {
             let (u, title) = (t.url.clone(), t.title.clone());
@@ -451,49 +585,7 @@ impl Shell {
 
     /// "example.com" -> https URL, "ddg foo" -> engine query, "rust async" -> search.
     pub fn resolve_url(&self, input: &str) -> String {
-        let s = input.trim();
-        if s.is_empty() {
-            return self.start_page();
-        }
-        if s.starts_with("javascript:") {
-            return self.start_page();
-        }
-        let has_scheme = s.contains("://")
-            || s.starts_with("about:")
-            || s.starts_with("file:")
-            || s.starts_with("data:")
-            || s.starts_with("view-source:");
-        if has_scheme {
-            return s.to_string();
-        }
-        if s.starts_with("localhost") || s.starts_with("127.0.0.1") || s.starts_with("[::1]") {
-            return format!("http://{s}");
-        }
-        // "engine prefix query"
-        if let Some((head, rest)) = s.split_once(' ') {
-            if let Some(engine) = self.cfg.search.get(head).and_then(|v| v.as_str()) {
-                return engine.replace("{}", &urlencode(rest));
-            }
-        }
-        let hostish = !s.contains(' ') && (s.contains('.') || s.contains(':')) && !s.ends_with('.');
-        if hostish {
-            return format!("https://{s}");
-        }
-        let engine_name = self.cfg.get_str("search_engine").unwrap_or("ddg");
-        let engine = self
-            .cfg
-            .search
-            .get(engine_name)
-            .and_then(|v| v.as_str())
-            .unwrap_or("https://duckduckgo.com/?q={}");
-        engine.replace("{}", &urlencode(s))
-    }
-
-    pub fn start_page(&self) -> String {
-        self.cfg
-            .get_str("start_page")
-            .unwrap_or("about:blank")
-            .to_string()
+        resolve_input(&self.cfg, input, &self.home)
     }
 
     fn handle_downloads(&mut self) {
@@ -582,7 +674,7 @@ impl Shell {
 
     pub fn run(&mut self) -> Result<(), String> {
         loop {
-            if self.quit {
+            if self.quit || QUIT_SIGNAL.load(Ordering::Relaxed) {
                 break;
             }
             match self.cdp.wait_event(Duration::from_millis(250)) {
@@ -623,10 +715,14 @@ impl Shell {
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    if let Some(t) = self.tab_by_session(&ev.session) {
-                        let idx = t;
+                    if let Some(idx) = self.tab_by_session(&ev.session) {
                         self.tabs[idx].url = url;
                         self.tabs[idx].loading = true;
+                        // New document, new world: the context id from the old
+                        // one is dead, so drop it and rebuild before anything
+                        // in the shell tries to evaluate.
+                        self.tabs[idx].world = None;
+                        self.inject_now(idx);
                         if self.active == idx {
                             self.push_state();
                         }
@@ -636,6 +732,9 @@ impl Shell {
             }
             "Page.loadEventFired" => {
                 if let Some(idx) = self.tab_by_session(&ev.session) {
+                    // The world is per document; make sure the UI is in it even
+                    // if the new-document script did not run.
+                    self.inject_now(idx);
                     self.tabs[idx].loading = false;
                     if self.active == idx {
                         self.remember_visit();
@@ -670,11 +769,16 @@ impl Shell {
                     .unwrap_or("")
                     .to_string();
                 if let Some(idx) = self.tabs.iter().position(|t| t.id == id) {
-                    // Engine-side close (page crash, :q from a page, etc.)
+                    // Engine-side close: window manager close, crash, a page
+                    // calling window.close(). Keep it recoverable with `u`.
+                    let (url, title) = (self.tabs[idx].url.clone(), self.tabs[idx].title.clone());
                     if self.tabs.len() == 1 {
+                        self.remember_closed(&url, &title);
+                        self.save_session_if_due(true);
                         self.quit = true;
                         return;
                     }
+                    self.remember_closed(&url, &title);
                     self.tabs.remove(idx);
                     if self.active >= self.tabs.len() {
                         self.active = self.tabs.len() - 1;
@@ -683,12 +787,34 @@ impl Shell {
                     self.push_state();
                 }
             }
+            "Runtime.executionContextCreated" => {
+                let ctx = &ev.params["context"];
+                if ctx.get("name").and_then(|v| v.as_str()) == Some("kite") {
+                    if let Some(idx) = self.tab_by_session(&ev.session) {
+                        self.tabs[idx].world = ctx.get("id").and_then(|v| v.as_i64());
+                    }
+                }
+            }
+            "Runtime.executionContextsCleared" => {
+                if let Some(idx) = self.tab_by_session(&ev.session) {
+                    self.tabs[idx].world = None;
+                }
+            }
             "Page.javascriptDialogOpening" => {
+                // `alert` and `beforeunload` are informational; `confirm` and
+                // `prompt` decide whether something happens, so they are
+                // blocked by default. A page must never get a free "yes".
+                let kind = ev.params.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let allow = self.cfg.get_str("dialogs").unwrap_or("block") == "allow"
+                    || matches!(kind, "alert" | "beforeunload");
                 let _ = self.cdp.call(
                     ev.session.as_deref(),
                     "Page.handleJavaScriptDialog",
-                    json!({ "accept": true }),
+                    json!({ "accept": allow }),
                 );
+                if !allow {
+                    self.toast(&format!("blocked {kind} dialog"));
+                }
             }
             "Page.windowOpen" => {
                 if let Some(url) = ev.params.get("url").and_then(|v| v.as_str()) {
@@ -721,7 +847,7 @@ impl Shell {
             "(()=>{{try{{window.__kite&&window.__kite.recv({}, {})}}catch(e){{}}}})()",
             rid, body
         );
-        let _ = self.cdp.eval(Some(&s), &expr);
+        let _ = self.world_eval(&s, &expr);
     }
 
     fn handle_binding(&mut self, session: Option<String>, payload: &str) {
@@ -756,7 +882,7 @@ impl Shell {
                     "(()=>{{try{{window.__kite&&window.__kite.boot({})}}catch(e){{}}}})()",
                     boot
                 );
-                let _ = self.cdp.eval(Some(&s), &expr);
+                let _ = self.world_eval(&s, &expr);
             }
             "nav" => {
                 let url = arg_str("url");
@@ -1024,6 +1150,53 @@ impl Shell {
     }
 }
 
+/// Shared by the shell and by startup, so a scheme-less `start_page` or CLI
+/// argument is normalised once and the engine's `--app=` window is never
+/// opened on a URL Chromium would reject.
+pub fn resolve_input(cfg: &Config, input: &str, home: &str) -> String {
+    let s = input.trim();
+    if s == "home" || s == "kite:home" {
+        return home.to_string();
+    }
+    if s.is_empty() {
+        let start = cfg.get_str("start_page").map(str::trim).unwrap_or("home");
+        if start.is_empty() || matches!(start, "home" | "kite" | "kite:home" | "about:blank") {
+            return home.to_string();
+        }
+        return resolve_input(cfg, start, home);
+    }
+    if s.starts_with("javascript:") {
+        return home.to_string();
+    }
+    let has_scheme = s.contains("://")
+        || s.starts_with("about:")
+        || s.starts_with("file:")
+        || s.starts_with("data:")
+        || s.starts_with("view-source:");
+    if has_scheme {
+        return s.to_string();
+    }
+    if s.starts_with("localhost") || s.starts_with("127.0.0.1") || s.starts_with("[::1]") {
+        return format!("http://{s}");
+    }
+    if let Some((head, rest)) = s.split_once(' ') {
+        if let Some(engine) = cfg.search.get(head).and_then(|v| v.as_str()) {
+            return engine.replace("{}", &urlencode(rest));
+        }
+    }
+    let hostish = !s.contains(' ') && (s.contains('.') || s.contains(':')) && !s.ends_with('.');
+    if hostish {
+        return format!("https://{s}");
+    }
+    let engine_name = cfg.get_str("search_engine").unwrap_or("ddg");
+    let engine = cfg
+        .search
+        .get(engine_name)
+        .and_then(|v| v.as_str())
+        .unwrap_or("https://duckduckgo.com/?q={}");
+    engine.replace("{}", &urlencode(s))
+}
+
 pub const COMMANDS: &[(&str, &str)] = &[
     ("open", "open a URL or search"),
     ("open-tab", "open in a new tab"),
@@ -1120,4 +1293,60 @@ fn clipboard_read() -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg() -> Config {
+        Config::default()
+    }
+
+    #[test]
+    fn resolves_inputs() {
+        let c = cfg();
+        let home = "file:///home/x/.local/state/kite/home.html";
+        assert_eq!(resolve_input(&c, "", home), home);
+        assert_eq!(resolve_input(&c, "home", home), home);
+        assert_eq!(
+            resolve_input(&c, "127.0.0.1:8080", home),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(resolve_input(&c, "localhost:9", home), "http://localhost:9");
+        assert_eq!(
+            resolve_input(&c, "example.com", home),
+            "https://example.com"
+        );
+        assert_eq!(
+            resolve_input(&c, "https://example.com", home),
+            "https://example.com"
+        );
+        assert_eq!(resolve_input(&c, "about:blank", home), "about:blank");
+        assert_eq!(resolve_input(&c, "javascript:alert(1)", home), home);
+        assert_eq!(
+            resolve_input(&c, "ddg two words", home),
+            "https://duckduckgo.com/?q=two+words"
+        );
+        assert!(
+            resolve_input(&c, "two words", home).starts_with("https://duckduckgo.com/?q=two+words")
+        );
+    }
+
+    #[test]
+    fn start_page_is_the_built_in_home() {
+        let mut c = cfg();
+        c.general
+            .insert("start_page".into(), serde_json::json!("home"));
+        let home = "file:///tmp/home.html";
+        assert_eq!(resolve_input(&c, "", home), home);
+        c.general
+            .insert("start_page".into(), serde_json::json!("about:blank"));
+        assert_eq!(resolve_input(&c, "", home), home);
+        c.general.insert(
+            "start_page".into(),
+            serde_json::json!("https://example.com"),
+        );
+        assert_eq!(resolve_input(&c, "", home), "https://example.com");
+    }
 }

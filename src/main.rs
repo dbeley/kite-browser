@@ -6,6 +6,7 @@
 mod cdp;
 mod config;
 mod engine;
+mod home;
 mod shell;
 mod store;
 mod wm;
@@ -170,6 +171,11 @@ fn main() {
                 restore = urls;
             }
         }
+        // Nothing in the session: the last window was closed and kite quit.
+        // Put it back instead of landing on the start page.
+        if boot_url.is_none() {
+            boot_url = store.pop_closed().map(|t| t.url);
+        }
     }
     let boot_url = boot_url.unwrap_or_else(|| {
         cfg.get_str("start_page")
@@ -183,6 +189,11 @@ fn main() {
             std::env::temp_dir().join(format!("kite-incognito-{}", std::process::id())),
         );
     }
+
+    let home_url = home::url(&state_dir, UI_VERSION, cfg.get_str("font"));
+    // Normalise before the engine sees it: `--app=127.0.0.1:8080` is not a URL
+    // and Chromium answers with a full browser window instead of app mode.
+    let boot_url = shell::resolve_input(&cfg, &boot_url, &home_url);
 
     let profile = state_dir.join("engine-profile");
     let engine_opts = EngineOptions {
@@ -236,6 +247,7 @@ fn main() {
         cfg,
         store,
         UI_JS.to_string(),
+        home_url.clone(),
         boot_url.clone(),
         if args.incognito { Vec::new() } else { restore },
     ) {
@@ -246,6 +258,7 @@ fn main() {
         }
     };
 
+    shell::install_quit_handler();
     let first_paint = shell.wait_first_paint(args.selftest || args.bench);
     if args.selftest {
         selftest(&mut shell, launch_ms, first_paint);
@@ -334,16 +347,12 @@ fn selftest(shell: &mut Shell, launch_ms: u128, first_paint: Option<std::time::D
         .unwrap_or(1500);
     shell.pump(std::time::Duration::from_millis(wait_ms));
     let session = shell.tabs.first().map(|t| t.session.clone());
-    let probe = shell.cdp.eval(
-        session.as_deref(),
-        "typeof window.__kite === 'object' ? window.__kite.version : 'missing'",
-    );
-    let dom = shell.cdp.eval(
-        session.as_deref(),
+    let probe =
+        shell.eval_ui("typeof window.__kite === 'object' ? window.__kite.version : 'missing'");
+    let dom = shell.eval_page(
         "JSON.stringify({title: document.title, href: location.href, text: (document.body ? document.body.innerText : '').slice(0,60), kids: document.body ? document.body.children.length : -1, kite: !!window.__kite, state: (window.__kite && window.__kite._state) ? window.__kite._state() : null})",
     );
-    let cfg = shell.cdp.eval(
-        session.as_deref(),
+    let cfg = shell.eval_ui(
         "(window.__kite && window.__kite._cfg) ? JSON.stringify(window.__kite._cfg()) : 'no hook'",
     );
     let shot = shell.cdp.call(
@@ -366,6 +375,7 @@ fn selftest(shell: &mut Shell, launch_ms: u128, first_paint: Option<std::time::D
         }
         Err(e) => println!("  screenshot   : failed: {e}"),
     }
+    let leak = shell.eval_page("typeof window.__kite + '/' + typeof window.__kiteSend");
     println!("selftest:");
     println!("  engine ready : {launch_ms} ms");
     println!(
@@ -375,6 +385,7 @@ fn selftest(shell: &mut Shell, launch_ms: u128, first_paint: Option<std::time::D
             .unwrap_or_else(|| "n/a".into())
     );
     println!("  ui layer     : {probe:?}");
+    println!("  page world   : {leak:?}");
     println!(
         "  dom          : {}",
         dom.map(|v| v.to_string())
@@ -386,7 +397,7 @@ fn selftest(shell: &mut Shell, launch_ms: u128, first_paint: Option<std::time::D
             .unwrap_or_else(|e| format!("error: {e}"))
     );
     if let Ok(expr) = std::env::var("KITE_EVAL") {
-        let r = shell.cdp.eval(session.as_deref(), &expr);
+        let r = shell.eval_ui(&expr);
         println!(
             "  eval         : {}",
             r.map(|v| v.to_string())
@@ -426,8 +437,7 @@ fn selftest(shell: &mut Shell, launch_ms: u128, first_paint: Option<std::time::D
         // Commands travel JS -> binding -> controller, so events must be pumped
         // before reading state back.
         shell.pump(std::time::Duration::from_millis(800));
-        let after = shell.cdp.eval(
-            session.as_deref(),
+        let after = shell.eval_ui(
             "JSON.stringify({mode:(window.__kite&&window.__kite._state)?window.__kite._state().mode:'?', err:(window.__kite&&window.__kite._state)?window.__kite._state().err:null, key:(window.__kite&&window.__kite._state)?window.__kite._state().key:null, hints:document.querySelectorAll('.h').length, palette:(window.__kite&&window.__kite._palette)?window.__kite._palette():null, scrollY:Math.round(window.scrollY)})",
         );
         println!(
@@ -436,6 +446,21 @@ fn selftest(shell: &mut Shell, launch_ms: u128, first_paint: Option<std::time::D
                 .map(|v| v.to_string())
                 .unwrap_or_else(|e| format!("error: {e}"))
         );
+    }
+    // A navigation means a new document and a new isolated world: the UI layer
+    // has to come back on its own. Regression check for the injection path.
+    let mut nav_ok = true;
+    if shell
+        .eval_page("location.href = location.pathname + '?nav=1'; 'ok'")
+        .is_ok()
+    {
+        shell.pump(std::time::Duration::from_millis(1200));
+        let ui =
+            shell.eval_ui("typeof window.__kite === 'object' ? window.__kite.version : 'missing'");
+        let page = shell.eval_page("typeof window.__kite + '/' + typeof window.__kiteSend");
+        nav_ok = matches!(ui, Ok(serde_json::Value::String(ref s)) if s == UI_VERSION)
+            && matches!(page, Ok(serde_json::Value::String(ref s)) if s == "undefined/undefined");
+        println!("  after a nav  : ui {ui:?}, page {page:?}");
     }
     let tabs = shell.tabs.len();
     println!("  tabs         : {tabs}");
@@ -447,7 +472,9 @@ fn selftest(shell: &mut Shell, launch_ms: u128, first_paint: Option<std::time::D
             .map(|t| t.url.clone())
             .unwrap_or_default()
     );
-    let ok = matches!(probe, Ok(serde_json::Value::String(ref s)) if s == UI_VERSION);
+    let ok = matches!(probe, Ok(serde_json::Value::String(ref s)) if s == UI_VERSION)
+        && matches!(leak, Ok(serde_json::Value::String(ref s)) if s == "undefined/undefined")
+        && nav_ok;
     println!("  result       : {}", if ok { "OK" } else { "FAIL" });
     if !ok {
         std::process::exit(1);

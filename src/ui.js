@@ -36,6 +36,7 @@
     cmd: null,
     find: { last: '', dir: 1 },
     home: location.href,
+    homeUrl: location.href,
     lastScroll: 0,
     loaded: false,
   };
@@ -77,8 +78,8 @@
     :host { all: initial; }
     * { box-sizing: border-box; }
     #chrome, #help {
-      font-family: ui-monospace, "Iosevka Term", "JetBrains Mono", "Fira Mono",
-                   "DejaVu Sans Mono", "SF Mono", Menlo, Consolas, monospace;
+      font-family: var(--kite-font, ui-monospace, "Iosevka Term", "Overpass Mono",
+                   "JetBrains Mono", "DejaVu Sans Mono", Menlo, monospace);
       font-variant-ligatures: none; text-rendering: geometricPrecision;
       -webkit-font-smoothing: antialiased;
     }
@@ -92,6 +93,7 @@
       will-change: transform; pointer-events: none;
     }
     #chrome.on { transform: none; pointer-events: auto; }
+    #chrome.off { display: none; }
 
     /* tabs: one line, active tab in inverse video */
     #tabs { display: flex; align-items: stretch; height: 19px; overflow: hidden; background: #0b0e11; }
@@ -227,6 +229,7 @@
 
   function prettyUrl(u) {
     const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    if (u && u === S.homeUrl) return '<b>kite</b>:home';
     try {
       const x = new URL(u);
       if (x.protocol === 'https:' || x.protocol === 'http:') {
@@ -253,7 +256,7 @@
     if (S.tabs.length > 1) b += '<span class="b">' + (S.activeIndex + 1) + '/' + S.tabs.length + '</span>';
     if (S.zoom && S.zoom !== 1) b += '<span class="b">' + Math.round(S.zoom * 100) + '%</span>';
     badges.innerHTML = b;
-    bar.classList.toggle('off', S.cfg.settings.status === false);
+    chromeEl.classList.toggle('off', S.cfg.settings.status === false);
 
     if (S.tabs.length > 1) {
       let h = '';
@@ -465,8 +468,8 @@
   }
 
   let imagesOff = false;
-  function toggleImages() {
-    imagesOff = !imagesOff;
+  function applyImages(off, quiet) {
+    imagesOff = off;
     let el = document.getElementById('__kite_noimg__');
     if (imagesOff) {
       if (!el) {
@@ -475,12 +478,13 @@
         el.textContent = 'img,picture,video,svg,canvas{visibility:hidden !important}';
         document.documentElement.appendChild(el);
       }
-      toast('images off');
+      if (!quiet) toast('images off');
     } else if (el) {
       el.remove();
-      toast('images on');
+      if (!quiet) toast('images on');
     }
   }
+  function toggleImages() { applyImages(!imagesOff, false); }
 
   /* ------------------------------------------------------------ key engine */
   const SPECIAL = {
@@ -1032,7 +1036,7 @@
       if (!cfg) return;
       if (!ensureUI()) return;
       S.cfg = {
-        settings: Object.assign({ bar: 'auto', status: true, hints_chars: 'asdfghjkl;', scroll_step: 84 }, cfg.settings || {}),
+        settings: Object.assign({ bar: 'auto', status: true, hints_chars: 'asdfghjkl;', scroll_step: 84, images: true, font: '' }, cfg.settings || {}),
         keymap: cfg.keymap || {},
         search: cfg.search || {},
       };
@@ -1040,6 +1044,9 @@
       if (typeof cfg.activeIndex === 'number') S.activeIndex = cfg.activeIndex;
       if (cfg.url) S.url = cfg.url;
       if (typeof cfg.bookmarked === 'boolean') S.bookmarked = cfg.bookmarked;
+      if (cfg.home) S.homeUrl = cfg.home;
+      if (S.cfg.settings.font) HOST.style.setProperty('--kite-font', S.cfg.settings.font);
+      if (S.cfg.settings.images === false) applyImages(true, true);
       S.zoom = cfg.settings && cfg.settings.zoom ? cfg.settings.zoom : 1;
       if (S.zoom !== 1) setZoom(S.zoom);
       setLoading(false);

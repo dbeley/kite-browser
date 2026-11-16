@@ -8,7 +8,11 @@ pub const DEFAULT_CONFIG: &str = r#"
 # kite — keyboard-first Chromium shell
 [general]
 engine = "chromium"
-start_page = "about:blank"
+start_page = "home"
+# allow confirm()/prompt() dialogs: block | allow
+dialogs = "block"
+# monospace stack for the shell UI (needs no bundled font)
+font = "Iosevka Term, Iosevka, Overpass Mono, JetBrains Mono, ui-monospace, monospace"
 search_engine = "ddg"
 width = 1280
 height = 820
@@ -289,6 +293,7 @@ impl Config {
                 "javascript": self.get_bool("javascript").unwrap_or(true),
                 "zoom": self.get_f64("zoom").unwrap_or(1.0),
                 "search_engine": self.get_str("search_engine").unwrap_or("ddg"),
+                "font": self.get_str("font").unwrap_or("Iosevka Term, Iosevka, Overpass Mono, ui-monospace, monospace"),
             },
         });
         if let (Some(b), Some(e)) = (base.as_object_mut(), extra.as_object()) {
@@ -420,4 +425,39 @@ pub fn home() -> std::path::PathBuf {
     std::env::var("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalises_key_sequences() {
+        assert_eq!(normalize_key_seq("gg"), vec!["g", "g"]);
+        assert_eq!(normalize_key_seq("ZQ"), vec!["Z", "Q"]);
+        assert_eq!(normalize_key_seq("y y"), vec!["y", "y"]);
+        assert_eq!(normalize_key_seq("<C-d>"), vec!["<C-d>"]);
+        assert_eq!(normalize_key_seq("<ctrl-shift-tab>"), vec!["<C-S-Tab>"]);
+        assert_eq!(normalize_key_seq("<esc>"), vec!["<Esc>"]);
+    }
+
+    #[test]
+    fn user_config_wins_over_defaults() {
+        let merged = deep_merge(
+            json!({ "general": { "bar": "auto", "status": true } }),
+            Config::from_toml("[general]\nbar = \"always\"")
+                .unwrap()
+                .raw,
+        );
+        assert_eq!(merged.pointer("/general/bar").unwrap(), "always");
+        assert_eq!(merged.pointer("/general/status").unwrap(), true);
+    }
+
+    #[test]
+    fn keymap_is_canonical() {
+        let c = Config::from_toml("[keys.normal]\n\"<C-D>\" = \"scroll half-page-down\"").unwrap();
+        let map = c.keymap_json();
+        let normal = map.get("normal").unwrap().as_object().unwrap();
+        assert_eq!(normal.get("<C-D>").unwrap(), "scroll half-page-down");
+    }
 }
