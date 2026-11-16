@@ -1,0 +1,16 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      # The flake pins the whole toolchain: rust, chromium, Xvfb, i3, the
+      # clipboard helpers. No distro packages to guess at.
+      - run: nix develop -c cargo test --release
+      - run: nix develop -c cargo build --release
+      # Real X server, real WM, real Chromium: keys, chrome, windows.
+      - run: nix develop -c ./dev/harness.sh
+        env:
+          KITE_SCENARIO: basic

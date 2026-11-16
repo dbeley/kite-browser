@@ -13,7 +13,7 @@ SRV="$STATE/serve"
 pkill -f "Xvfb $DISP" 2>/dev/null || true
 pkill -f "kite.*--state" 2>/dev/null || true
 sleep 0.3
-rm -rf "$OUT" "$SRV" "$STATE/engine-profile"
+rm -rf "$OUT" "$SRV" "$STATE/engine-profile" "$STATE/session.json" "$STATE/closed.json"
 mkdir -p "$OUT" "$SRV"
 
 # ---------------------------------------------------------------- test pages
@@ -111,12 +111,14 @@ shot() {
 keys() { xdotool key --clearmodifiers --delay 60 "$@"; }
 type_in() { xdotool type --clearmodifiers --delay 28 "$1"; }
 
-"$HERE/target/release/kite" "${KITE_URL:-http://127.0.0.1:8808/index.html}" &
+# KITE_URL="" opens the built-in start page (no URL at all).
+URL="${KITE_URL-http://127.0.0.1:8808/index.html}"
+"$HERE/target/release/kite" ${URL:+"$URL"} &
 KITE_PID=$!
 
-# Wait for the page window to exist and paint (software raster is slow here).
+# Wait for the window to exist and paint (software raster is slow here).
 for _ in $(seq 1 60); do
-  if xdotool search --name "kite test page" >/dev/null 2>&1; then break; fi
+  if xdotool search --class "Chromium-browser" >/dev/null 2>&1; then break; fi
   sleep 0.5
 done
 sleep "${KITE_SETTLE:-2}"
@@ -153,6 +155,10 @@ case "${KITE_SCENARIO:-basic}" in
     ;;
   find)
     keys slash; type_in "anchor"; keys Return; sleep 1; shot 01-find
+    ;;
+  home)
+    shot 01-home
+    keys o; type_in "127.0.0.1:8808/one.html"; keys Return; sleep 3; shot 02-home-nav
     ;;
   *)
     shot 01-start
