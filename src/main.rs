@@ -206,6 +206,7 @@ fn main() {
         url: boot_url.clone(),
         port: args.port,
         extra_args: cfg.extra_args(),
+        extensions: cfg.extensions(),
         width: args
             .width
             .or(cfg.get_i64("width").map(|v| v as u32))

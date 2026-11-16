@@ -2,6 +2,7 @@
 //! history/bookmarks/session, and the privileged side of the in-page command
 //! surface. Everything here is invoked from the UI layer over a CDP binding.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -55,6 +56,9 @@ pub struct Shell {
     pub tabs: Vec<Tab>,
     pub active: usize,
     closed: Vec<SessionTab>,
+    /// (label, url) of the extensions loaded by the engine, refreshed whenever
+    /// the `:extensions` palette opens.
+    ext_cache: Vec<(String, String)>,
     ui: String,
     home: String,
     quit: bool,
@@ -90,6 +94,7 @@ impl Shell {
             tabs: Vec::new(),
             active: 0,
             closed,
+            ext_cache: Vec::new(),
             ui,
             home,
             quit: false,
@@ -968,6 +973,9 @@ impl Shell {
                 let kind = arg_str("kind");
                 let q = arg_str("query");
                 let limit = arg_u("limit").unwrap_or(12);
+                if kind == "ext" {
+                    self.ext_cache = self.discover_extensions();
+                }
                 let items = self.completions(&kind, &q, limit);
                 self.reply(session, rid, json!({ "items": items }));
             }
@@ -1058,6 +1066,91 @@ impl Shell {
             .unwrap_or_default()
     }
 
+    /// The extensions the engine actually loaded, as (label, url of their UI).
+    ///
+    /// Chromium derives an unpacked extension's id from its directory path, so
+    /// the id is stable but impossible to guess. The profile's `Preferences`
+    /// records the id -> directory mapping for every extension, asleep or not;
+    /// the live targets are a fallback for the very first run, before that file
+    /// is written.
+    fn discover_extensions(&mut self) -> Vec<(String, String)> {
+        let dirs = self.cfg.extensions();
+        let mut out: Vec<(String, String)> = Vec::new();
+        if dirs.is_empty() {
+            return out;
+        }
+        let prefs = self.engine.profile.join("Default/Preferences");
+        let by_path: Vec<(String, String)> = std::fs::read_to_string(&prefs)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| {
+                v.pointer("/extensions/settings")
+                    .and_then(|s| s.as_object().cloned())
+            })
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(id, e)| {
+                        let p = e.get("path").and_then(|p| p.as_str())?;
+                        Some((id.clone(), p.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let by_target = self.extension_targets();
+        for dir in &dirs {
+            let manifest = read_manifest(Path::new(dir));
+            let bg = manifest.as_ref().map(background_path).unwrap_or_default();
+            let id = by_path
+                .iter()
+                .find(|(_, p)| same_path(p) == same_path(dir))
+                .map(|(id, _)| id.clone())
+                .or_else(|| {
+                    by_target
+                        .iter()
+                        .find(|(_, path)| !bg.is_empty() && *path == bg)
+                        .map(|(id, _)| id.clone())
+                })
+                .or_else(|| {
+                    // One extension, one id: there is nothing to confuse.
+                    if dirs.len() == 1 {
+                        by_target.first().map(|(id, _)| id.clone())
+                    } else {
+                        None
+                    }
+                });
+            let Some(id) = id else { continue };
+            let d = Path::new(dir);
+            let (label, page) = match &manifest {
+                Some(m) => (ext_name(d, m), ext_page(d, m)),
+                None => (dir_label(d), String::new()),
+            };
+            let url = format!("chrome-extension://{id}/{page}");
+            if !out.iter().any(|(_, u)| *u == url) {
+                out.push((label, url));
+            }
+        }
+        out
+    }
+
+    /// `(id, script path)` for every extension with a live target.
+    fn extension_targets(&mut self) -> Vec<(String, String)> {
+        self.cdp
+            .call(None, "Target.getTargets", json!({}))
+            .ok()
+            .and_then(|v| v.get("targetInfos").and_then(|t| t.as_array().cloned()))
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t.get("url").and_then(|u| u.as_str()))
+                    .filter_map(|u| {
+                        let rest = u.strip_prefix("chrome-extension://")?;
+                        let (id, path) = rest.split_once('/')?;
+                        Some((id.to_string(), path.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn completions(&self, kind: &str, q: &str, limit: usize) -> Vec<Value> {
         let ql = q.to_lowercase();
         let mut out: Vec<Value> = Vec::new();
@@ -1084,6 +1177,16 @@ impl Shell {
                     }
                     if out.len() >= limit {
                         break;
+                    }
+                }
+            }
+            "ext" => {
+                for (label, url) in &self.ext_cache {
+                    if ql.is_empty()
+                        || label.to_lowercase().contains(&ql)
+                        || url.to_lowercase().contains(&ql)
+                    {
+                        out.push(json!({ "text": label, "detail": url, "kind": "ext" }));
                     }
                 }
             }
@@ -1197,6 +1300,95 @@ pub fn resolve_input(cfg: &Config, input: &str, home: &str) -> String {
     engine.replace("{}", &urlencode(s))
 }
 
+fn read_manifest(dir: &Path) -> Option<Value> {
+    let raw = std::fs::read_to_string(dir.join("manifest.json")).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn background_path(m: &Value) -> String {
+    if let Some(sw) = m
+        .pointer("/background/service_worker")
+        .and_then(|v| v.as_str())
+    {
+        return sw.to_string();
+    }
+    m.pointer("/background/page")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Two spellings of the same directory compare equal (`~`, symlinks, a
+/// trailing slash).
+fn same_path(p: &str) -> String {
+    std::fs::canonicalize(p)
+        .map(|c| c.to_string_lossy().to_string())
+        .unwrap_or_else(|_| p.trim_end_matches('/').to_string())
+}
+
+fn dir_label(dir: &Path) -> String {
+    dir.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| dir.display().to_string())
+}
+
+/// `__MSG_extName__` -> the localized message, one level deep.
+fn ext_name(dir: &Path, m: &Value) -> String {
+    let raw = m.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let key = raw
+        .strip_prefix("__MSG_")
+        .and_then(|r| r.strip_suffix("__"));
+    if let Some(key) = key {
+        let loc = m
+            .get("default_locale")
+            .and_then(|v| v.as_str())
+            .unwrap_or("en");
+        let path = dir.join("_locales").join(loc).join("messages.json");
+        if let Ok(txt) = std::fs::read_to_string(path) {
+            if let Ok(v) = serde_json::from_str::<Value>(&txt) {
+                if let Some(msg) = v
+                    .get(key)
+                    .and_then(|e| e.get("message"))
+                    .and_then(|s| s.as_str())
+                {
+                    return msg.to_string();
+                }
+            }
+        }
+        return dir_label(dir);
+    }
+    if raw.is_empty() {
+        dir_label(dir)
+    } else {
+        raw.to_string()
+    }
+}
+
+/// The most useful page the extension ships: its popup, else something close.
+fn ext_page(dir: &Path, m: &Value) -> String {
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(p) = m
+        .pointer("/action/default_popup")
+        .or_else(|| m.pointer("/browser_action/default_popup"))
+        .and_then(|v| v.as_str())
+    {
+        candidates.push(p.trim_start_matches('/').to_string());
+    }
+    for p in [
+        "popups/popup.html",
+        "popup.html",
+        "dashboard.html",
+        "options.html",
+        "index.html",
+    ] {
+        candidates.push(p.to_string());
+    }
+    candidates
+        .into_iter()
+        .find(|p| dir.join(p).is_file())
+        .unwrap_or_default()
+}
+
 pub const COMMANDS: &[(&str, &str)] = &[
     ("open", "open a URL or search"),
     ("open-tab", "open in a new tab"),
@@ -1205,6 +1397,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("tab-next", "next tab"),
     ("tab-prev", "previous tab"),
     ("tab-undo", "reopen the last closed window"),
+    ("extensions", "open an extension's own page"),
     ("q", "quit kite"),
     ("qall", "quit kite"),
     ("reload", "reload page"),
@@ -1331,6 +1524,39 @@ mod tests {
         assert!(
             resolve_input(&c, "two words", home).starts_with("https://duckduckgo.com/?q=two+words")
         );
+    }
+
+    #[test]
+    fn extension_label_and_page_come_from_the_manifest() {
+        let dir = std::env::temp_dir().join(format!("kite-ext-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("popups")).unwrap();
+        std::fs::create_dir_all(dir.join("_locales/en")).unwrap();
+        std::fs::write(dir.join("popups/popup.html"), "<!doctype html>").unwrap();
+        std::fs::write(
+            dir.join("_locales/en/messages.json"),
+            r#"{"extName":{"message":"Localised Name"}}"#,
+        )
+        .unwrap();
+        let m: Value = serde_json::from_str(
+            r#"{"name":"__MSG_extName__","default_locale":"en",
+               "action":{"default_popup":"popups/popup.html"},
+               "background":{"service_worker":"bg.js"}}"#,
+        )
+        .unwrap();
+        assert_eq!(ext_name(&dir, &m), "Localised Name");
+        assert_eq!(ext_page(&dir, &m), "popups/popup.html");
+        assert_eq!(background_path(&m), "bg.js");
+
+        // A popup the package does not ship is not offered.
+        let empty = dir.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert_eq!(ext_page(&empty, &m), "");
+        // A literal name is used as-is; no manifest falls back to the dir name.
+        let literal: Value = serde_json::from_str(r#"{"name":"Plain"}"#).unwrap();
+        assert_eq!(ext_name(&empty, &literal), "Plain");
+        assert_eq!(dir_label(&empty), "empty");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

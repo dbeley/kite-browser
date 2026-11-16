@@ -22,6 +22,11 @@ height = 820
 decorations = false
 # Start fullscreen. The one way to guarantee no frame on any compositor.
 fullscreen = false
+# Extensions to load, as unpacked directories (a "~" is expanded). Empty by
+# default: none of Chromium's own UI (no toolbar, no chrome://extensions) exists
+# in kite, so only content-script-shaped addons are useful — an ad blocker or a
+# password manager's fill shortcut, not a toolbar button.
+extensions = []
 # auto: bar appears on load/command/hint, hides otherwise (best for small screens)
 bar = "auto"
 status = true
@@ -254,6 +259,21 @@ impl Config {
             .unwrap_or_default()
     }
 
+    /// Extension directories from `general.extensions`, with `~` expanded.
+    pub fn extensions(&self) -> Vec<String> {
+        self.general
+            .get("extensions")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| expand_home(s.trim()))
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Canonical keymap handed to the UI: `{"normal": {"g g": "scroll top"}}`.
     /// Keys are normalised to space-separated tokens so JS can match sequences.
     pub fn keymap_json(&self) -> Value {
@@ -459,5 +479,19 @@ mod tests {
         let map = c.keymap_json();
         let normal = map.get("normal").unwrap().as_object().unwrap();
         assert_eq!(normal.get("<C-D>").unwrap(), "scroll half-page-down");
+    }
+}
+
+/// `~/x` -> `$HOME/x`. Only the leading tilde is expanded; no shell.
+fn expand_home(path: &str) -> String {
+    if path == "~" {
+        return std::env::var("HOME").unwrap_or_else(|_| path.to_string());
+    }
+    match path.strip_prefix("~/") {
+        Some(rest) => match std::env::var("HOME") {
+            Ok(home) => format!("{home}/{rest}"),
+            Err(_) => path.to_string(),
+        },
+        None => path.to_string(),
     }
 }

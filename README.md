@@ -162,13 +162,83 @@ Checked by driving a real Chromium under a real X server (`dev/harness.sh`):
   `status = false` hides the status line, `font` sets the UI stack, `dialogs`,
   `bar`, `start_page`, `decorations`, `fullscreen`.
 - **Private tabs** — CDP browser contexts.
+- **Extensions** — unpacked addons load into app windows; `:extensions` opens
+  their own pages. Verified: a content script blocks a real ad request, and an
+  extension keyboard command fires.
 - **Config** — TOML, deep-merged over built-in defaults, hot-reloadable by
   restart; on NixOS you can generate it declaratively.
 - **Help** — `?` renders the full keymap from the live config.
 
-Still missing or partial: downloads have a directory but no UI, no extensions, no
-permissions prompts (camera/mic/notifications), find has no match counter, no
-reader mode, no sync.
+Still missing or partial: downloads have a directory but no UI, no permission
+prompts (camera/mic/notifications), find has no match counter, no reader mode, no
+sync. Extensions load (see below) but have no browser chrome to live in.
+
+## Extensions
+
+Chromium addons load into kite's app windows; kite just gives them no browser
+chrome to live in. Point `general.extensions` at unpacked directories:
+
+```toml
+[general]
+extensions = [
+  "~/.local/share/kite/ext/ublock-origin-lite",
+  "~/.local/share/kite/ext/keepassxc-browser",
+]
+```
+
+kite turns that into `--load-extension=…` + `--disable-extensions-except=…`, and
+`:extensions` lists what actually loaded (name, id, URL) so you can open an
+addon's own page as a window — that is the only "toolbar" there is.
+
+What works and what cannot, tested against real addons in an app window under
+Xvfb:
+
+| | |
+| --- | --- |
+| content scripts, MV3 service workers, declarativeNetRequest | ✅ verified: uBlock Origin Lite blocks the ad script it is there for |
+| extension keyboard commands (`chrome.commands`) | ✅ verified: `Alt+Shift+K` in an app window reached the extension |
+| extension pages (`chrome-extension://…/popup.html`, `dashboard.html`) | ✅ verified: they open in a normal kite window |
+| toolbar button, badge, `chrome.action` popup | ❌ no toolbar exists; an addon that is *only* a button has nothing to click |
+| `chrome://extensions` | ❌ Chromium refuses app mode and opens a full browser window instead |
+| Chrome Web Store install | ❌ sideload unpacked directories only |
+| startup cost | ⏱ two addons add ~4.5 s to engine start (9 MB of filter rules is not free) |
+
+### uBlock Origin
+
+The classic MV2 uBlock Origin **no longer loads** in current Chromium: it needs
+manifest v2, and Chromium 157 refuses it even with
+`--disable-features=ExtensionManifestV2Deprecation` (verified: no background
+page, the ad script still loads). Use **uBlock Origin Lite** (MV3) instead —
+[`uBOL-home` releases](https://github.com/uBlockOrigin/uBOL-home/releases),
+`uBOLite_*.chromium.zip`, extracted to `~/.local/share/kite/ext/ublock-origin-lite`.
+Its popup and its dashboard both open through `:extensions`.
+
+### KeePassXC-Browser
+
+The extension loads ([releases](https://github.com/keepassxreboot/keepassxc-browser/releases),
+`keepassxc-browser_*_chromium.zip`), its service worker runs, and its fill
+shortcuts (`Alt+Shift+U` / `Alt+Shift+P`) reach it. One thing has to be fixed
+outside kite: KeePassXC's native-messaging host manifest only allows the
+extension ids from the Chrome Web Store, while an unpacked copy gets a different
+id (a hash of its directory). Add kite's id to `allowed_origins`:
+
+```sh
+# the id is in the :extensions palette (also in
+# <state>/engine-profile/Default/Preferences, extensions.settings)
+HOST=~/.config/chromium/NativeMessagingHosts/org.keepassxc.keepassxc_browser.json
+python3 -c 'import json,sys;p=sys.argv[1];d=json.load(open(p));d["allowed_origins"].append("chrome-extension://"+sys.argv[2]+"/");json.dump(d,open(p,"w"),indent=4)' \
+  "$HOST" <id-from-kite>
+```
+
+Then `Alt+Shift+U` on a login page asks KeePassXC to approve the new client, and
+`:extensions` opens the popup where the connection state and per-site settings
+live. Not verified end to end: the approval dialog and a real fill need the
+database unlocked, which the headless harness cannot do — so treat that last
+step as "should work, tell me if it does not".
+
+Remember: a page still cannot touch the shell (the UI layer lives in its own
+world), but an extension is privileged code by design — it can do what it
+declares to every page you load.
 
 ## Install
 
@@ -232,7 +302,7 @@ Defaults, all remappable. `?` shows the live list.
 | `o` / `O` / `go` | open / open new tab / edit current URL |
 | `t` / `d` / `gt` / `gT` / `u` | new / close / next / prev / reopen window |
 | `f` / `F` / `;y` | hint click / hint new tab / hint yank |
-| `:` | command palette |
+| `:` | command palette (`:extensions` lists loaded addons) |
 | `/` `n` `N` | find, next, previous |
 | `yy` `yt` | yank URL / title |
 | `p` `P` | paste & open / paste & open new tab |
@@ -310,15 +380,17 @@ afternoon.
    means they come back as a tabbed browser window.
 2. **No permission prompts.** Camera, microphone and notification requests have
    no UI.
-3. **Dialogs are all-or-nothing.** `dialogs = "block"` denies every `confirm`
+3. **No toolbar, so no addon UI.** Extensions can block, fill and run scripts;
+   a toolbar button has nowhere to be clicked.
+4. **Dialogs are all-or-nothing.** `dialogs = "block"` denies every `confirm`
    and `prompt`, so a site that needs one (a "discard draft?" prompt, a login
    flow) needs `dialogs = "allow"` for the whole session.
-4. **One window per tab still.** Session restore goes through the same
+5. **One window per tab still.** Session restore goes through the same
    app-window path, so several restored tabs are several windows.
-5. **Find is basic.** `window.find` selects text but has no highlight or count.
-6. **`--disable-gpu` can blank pages** on some builds — off by default, see
+6. **Find is basic.** `window.find` selects text but has no highlight or count.
+7. **`--disable-gpu` can blank pages** on some builds — off by default, see
    `docs/perf.md`.
-7. **Quitting kills the engine.** Closing the last window exits; there is no tray
+8. **Quitting kills the engine.** Closing the last window exits; there is no tray
    or background mode. (The window itself is recoverable with `u`.)
 
 Known Chromium leaks that kite deliberately keeps: private tabs come back as a
@@ -338,7 +410,7 @@ KITE_SCENARIO=insert  ./dev/harness.sh    # auto insert mode
 KITE_SCENARIO=nav     ./dev/harness.sh    # o → url → enter
 KITE_SCENARIO=find    ./dev/harness.sh    # / → type → enter
 KITE_SCENARIO=tabs    ./dev/harness.sh    # new windows
-KITE_URL= KITE_SCENARIO=home ./dev/harness.sh   # the built-in start page
+KITE_URL= KITE_SCENARIO=home  ./dev/harness.sh   # the built-in start page
 
 # headless assertions (engine up, first paint, UI injected, keymap delivered)
 ./target/release/kite --selftest <url>
@@ -346,6 +418,9 @@ KITE_KEYS="f" ./target/release/kite --selftest <url>   # drive the keymap
 
 # cold start + PSS memory, 3 runs
 ./dev/bench.sh /tmp/bench.jsonl
+
+# fetch uBlock Origin Lite + KeePassXC-Browser as unpacked addons
+./dev/extensions.sh
 ```
 
 Unit tests (`config`, `store`, `home`, URL resolution) and the harness run in CI
@@ -361,7 +436,7 @@ Useful environment switches: `KITE_NO_SANDBOX`, `KITE_DISABLE_GPU`,
 ```
 src/ws.rs       minimal WebSocket client + debug-port HTTP (no async runtime)
 src/cdp.rs      CDP client, flat sessions, event queue
-src/engine.rs   Chromium supervisor and the performance flag set
+src/engine.rs   Chromium supervisor, performance flags, extension args
 src/shell.rs    tabs, navigation, privileged commands, completions, session
 src/store.rs    history, bookmarks, session, closed windows (JSON, atomic writes)
 src/home.rs     writes the built-in start page and hands back its file:// URL
@@ -370,7 +445,7 @@ src/wm.rs       strips the X11 window frame from the engine's windows
 src/ui.js       injected chrome: status line, palette, hints, keymap, help
 src/home.html   the start page, embedded at build time
 nix/            package, NixOS module, desktop entry, icon
-dev/            headless GUI harness, benchmark, GPU-flag probe
+dev/            headless GUI harness, benchmark, GPU probe, addon fetcher
 ```
 
 ## License

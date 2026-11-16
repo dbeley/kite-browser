@@ -763,6 +763,7 @@
       case 'find': return { sig: '/', ph: 'find in page', meta: '' };
       case 'bookmark': return { sig: '#', ph: 'bookmarks', meta: '' };
       case 'history': return { sig: '>', ph: 'history', meta: '' };
+      case 'ext': return { sig: '+', ph: 'extensions', meta: '' };
       default: return { sig: ':', ph: 'open url, search, or pick', meta: '' };
     }
   }
@@ -897,7 +898,7 @@
     }
     // open / bookmark / history
     let target = raw;
-    if (picked && (picked.kind === 'bookmark' || picked.kind === 'history' || picked.kind === 'tab')) {
+    if (picked && (picked.kind === 'bookmark' || picked.kind === 'history' || picked.kind === 'tab' || picked.kind === 'ext')) {
       target = picked.detail || picked.text;
       if (picked.kind === 'tab' && typeof picked.index === 'number') {
         tell('tab', { op: 'select', index: picked.index });
@@ -939,6 +940,7 @@
       bookmark: () => tell('bookmark', { op: 'toggle', url: location.href, title: document.title }),
       bookmarks: () => openPalette('bookmark', ''),
       history: () => openPalette('history', ''),
+      extensions: () => openPalette('ext', ''),
       'session-save': () => toast('session is saved continuously'),
       private: () => tell('nav', { url: '', newTab: true, private: true }),
       external: () => tell('external', { url: location.href }),

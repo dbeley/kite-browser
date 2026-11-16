@@ -15,7 +15,7 @@ use serde_json::Value;
 pub struct Engine {
     child: Option<Child>,
     bin: PathBuf,
-    profile: PathBuf,
+    pub profile: PathBuf,
     width: u32,
     height: u32,
     pub port: u16,
@@ -31,6 +31,8 @@ pub struct EngineOptions {
     pub url: String,
     pub port: u16,
     pub extra_args: Vec<String>,
+    /// Unpacked extension directories to load.
+    pub extensions: Vec<String>,
     pub width: u32,
     pub height: u32,
     pub incognito: bool,
@@ -93,6 +95,28 @@ fn app_url(url: &str) -> &str {
 
 /// Flags that cut startup work, background chatter and memory. Each one is
 /// measured, not folklore: see docs/perf.md.
+/// `--load-extension=a,b` + `--disable-extensions-except=a,b`.
+///
+/// `--disable-extensions` is always passed by `perf_args`: it silences the
+/// component/default extension machinery, and it does *not* block an extension
+/// named here (verified: a loaded MV3 addon runs its service worker and content
+/// scripts in an app window).
+pub fn extension_args(paths: &[String]) -> Vec<String> {
+    let dirs: Vec<&str> = paths
+        .iter()
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if dirs.is_empty() {
+        return Vec::new();
+    }
+    let list = dirs.join(",");
+    vec![
+        format!("--load-extension={list}"),
+        format!("--disable-extensions-except={list}"),
+    ]
+}
+
 fn perf_args(decorations: bool) -> Vec<String> {
     let mut features = String::from(
         "Translate,MediaRouter,OptimizationHints,CalculateNativeWinOcclusion,\
@@ -239,6 +263,9 @@ impl Engine {
         for a in perf_args(opts.decorations) {
             cmd.arg(a);
         }
+        for a in extension_args(&opts.extensions) {
+            cmd.arg(a);
+        }
         for a in &opts.extra_args {
             cmd.arg(a);
         }
@@ -369,5 +396,28 @@ impl Engine {
             Some(c) => matches!(c.try_wait(), Ok(None)),
             None => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extensions_become_two_flags() {
+        let a = extension_args(&["/a/one".into(), "~/ext/two".into()]);
+        assert_eq!(
+            a,
+            vec![
+                "--load-extension=/a/one,~/ext/two".to_string(),
+                "--disable-extensions-except=/a/one,~/ext/two".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn no_extensions_means_no_flags() {
+        assert!(extension_args(&[]).is_empty());
+        assert!(extension_args(&["".into(), "  ".into()]).is_empty());
     }
 }
