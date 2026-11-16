@@ -62,6 +62,23 @@ Two consequences worth stating plainly:
   so moving the chrome *into* the page is not a compromise, it is the only
   correct shape.
 
+The UI layer does not run in the page's world. It lives in a CDP **isolated
+world** (`Page.createIsolatedWorld`, world name `kite`), with its own
+`window`, its own globals and its own copy of the DOM. The `__kiteSend` binding
+is registered for that context name only, so a page cannot see `window.__kite`,
+cannot call the binding, and cannot overwrite the key handler. The world belongs
+to a document, so kite rebuilds it on every navigation and re-injects the layer
+there; `--selftest` asserts the page side stays `undefined/undefined` after a
+navigation, not just on the first document.
+
+Dialogs follow the same rule — a page never gets a free "yes":
+
+```toml
+[general]
+dialogs = "block"   # alert/beforeunload accepted; confirm/prompt denied + toast
+                    # "allow" accepts everything, for sites you trust
+```
+
 ## No Chromium UI, no window frame
 
 Chromium is the engine, not the interface. Three things keep its own chrome out
@@ -93,6 +110,19 @@ compositor that insists on drawing one. If a border or gap remains, the rule
 belongs in the compositor config (for example niri's `border { off }` window
 rule, or sway's `default_border none`).
 
+## The start page
+
+There is a built-in `kite:home` page, and it is a file, not a server and not a
+`data:` URL: kite writes it to `<state>/home.html` at startup (rewritten when the
+contents change) and boots the first window on it. That keeps the address short
+and readable in the status line and in the session file, works offline, and
+costs one `write` per upgrade. It follows `general.font` and the release version.
+
+`start_page = "home"` (the default) is what makes `o`, `gh` and a new window land
+there; set it to a URL if you would rather boot somewhere else.
+
+![the start page](docs/img/home.png)
+
 ## What works (verified)
 
 Checked by driving a real Chromium under a real X server (`dev/harness.sh`):
@@ -120,7 +150,17 @@ Checked by driving a real Chromium under a real X server (`dev/harness.sh`):
 - **Zoom** — `+`/`-`/`C-0`.
 - **Bookmarks & history** — `m`, `gb`, `C-h`, persisted as JSON, used as palette
   sources and ranked by a cheap frecency score.
-- **Session restore** — tabs come back on restart.
+- **Session restore** — tabs come back on restart, as app windows (no tab strip).
+- **Reopen a closed window** — `u` after a window closes, and the closed stack is
+  written to `closed.json`, so the last window can be brought back on the next
+  launch too. Verified with two windows: close one, `u`, it returns; quit from
+  the last one, relaunch, it comes back.
+- **Dialogs** — `confirm`/`prompt` are blocked by default and surfaced as a
+  toast; `alert`/`beforeunload` are dismissed so a page cannot hang the window.
+- **Config keys that do something** — `javascript = false` disables page scripts
+  (`Emulation.setScriptExecutionDisabled`), `images = false` strips images,
+  `status = false` hides the status line, `font` sets the UI stack, `dialogs`,
+  `bar`, `start_page`, `decorations`, `fullscreen`.
 - **Private tabs** — CDP browser contexts.
 - **Config** — TOML, deep-merged over built-in defaults, hot-reloadable by
   restart; on NixOS you can generate it declaratively.
@@ -190,7 +230,7 @@ Defaults, all remappable. `?` shows the live list.
 | `H` / `L` | back / forward |
 | `r` / `R` | reload / hard reload |
 | `o` / `O` / `go` | open / open new tab / edit current URL |
-| `t` / `d` / `gt` / `gT` / `u` | new / close / next / prev / reopen tab |
+| `t` / `d` / `gt` / `gT` / `u` | new / close / next / prev / reopen window |
 | `f` / `F` / `;y` | hint click / hint new tab / hint yank |
 | `:` | command palette |
 | `/` `n` `N` | find, next, previous |
@@ -264,16 +304,21 @@ afternoon.
    tab strip (visible chrome) or engine embedding — both are deliberate
    trade-offs, not bugs. Private tabs still use a CDP browser context, which
    means they come back as a tabbed browser window.
-2. **The UI layer runs in the page's main world.** A hostile page could call the
-   binding (`__kiteSend`) directly. The fix is an isolated world plus an origin
-   check; it is not implemented.
-3. **No permission prompts.** Camera, microphone and notification requests have
+2. **No permission prompts.** Camera, microphone and notification requests have
    no UI.
-4. **Find is basic.** `window.find` selects text but has no highlight or count.
-5. **`--disable-gpu` can blank pages** on some builds — off by default, see
+3. **Dialogs are all-or-nothing.** `dialogs = "block"` denies every `confirm`
+   and `prompt`, so a site that needs one (a "discard draft?" prompt, a login
+   flow) needs `dialogs = "allow"` for the whole session.
+4. **One window per tab still.** Session restore goes through the same
+   app-window path, so several restored tabs are several windows.
+5. **Find is basic.** `window.find` selects text but has no highlight or count.
+6. **`--disable-gpu` can blank pages** on some builds — off by default, see
    `docs/perf.md`.
-6. **Quitting kills the engine.** Closing the last tab exits; there is no tray or
-   background mode.
+7. **Quitting kills the engine.** Closing the last window exits; there is no tray
+   or background mode. (The window itself is recoverable with `u`.)
+
+Known Chromium leaks that kite deliberately keeps: private tabs come back as a
+tabbed browser window, because a private context cannot adopt an app window.
 
 ## Development
 
@@ -284,8 +329,12 @@ cargo build --release
 # real GUI test: Xvfb + i3 + a local test page, with screenshots
 KITE_SCENARIO=basic   ./dev/harness.sh    # bar, scroll, hints
 KITE_SCENARIO=palette ./dev/harness.sh    # command palette
+KITE_SCENARIO=help    ./dev/harness.sh    # the keymap pager
+KITE_SCENARIO=insert  ./dev/harness.sh    # auto insert mode
 KITE_SCENARIO=nav     ./dev/harness.sh    # o → url → enter
-KITE_SCENARIO=tabs    ./dev/harness.sh
+KITE_SCENARIO=find    ./dev/harness.sh    # / → type → enter
+KITE_SCENARIO=tabs    ./dev/harness.sh    # new windows
+KITE_URL= KITE_SCENARIO=home ./dev/harness.sh   # the built-in start page
 
 # headless assertions (engine up, first paint, UI injected, keymap delivered)
 ./target/release/kite --selftest <url>
@@ -294,6 +343,10 @@ KITE_KEYS="f" ./target/release/kite --selftest <url>   # drive the keymap
 # cold start + PSS memory, 3 runs
 ./dev/bench.sh /tmp/bench.jsonl
 ```
+
+Unit tests (`config`, `store`, `home`, URL resolution) and the harness run in CI
+on every push: `.github/workflows/ci.yml` does `cargo test`, a release build, and
+the `basic` scenario under Xvfb + i3.
 
 Useful environment switches: `KITE_NO_SANDBOX`, `KITE_DISABLE_GPU`,
 `KITE_ENGINE_LOG`, `KITE_PRINT_ARGS`, `KITE_DEBUG_BIND`,
@@ -306,10 +359,12 @@ src/ws.rs       minimal WebSocket client + debug-port HTTP (no async runtime)
 src/cdp.rs      CDP client, flat sessions, event queue
 src/engine.rs   Chromium supervisor and the performance flag set
 src/shell.rs    tabs, navigation, privileged commands, completions, session
-src/store.rs    history, bookmarks, session (JSON, atomic writes)
+src/store.rs    history, bookmarks, session, closed windows (JSON, atomic writes)
+src/home.rs     writes the built-in start page and hands back its file:// URL
 src/config.rs   TOML defaults, deep merge, key-sequence normalisation
 src/wm.rs       strips the X11 window frame from the engine's windows
 src/ui.js       injected chrome: status line, palette, hints, keymap, help
+src/home.html   the start page, embedded at build time
 nix/            package, NixOS module, desktop entry, icon
 dev/            headless GUI harness, benchmark, GPU-flag probe
 ```
