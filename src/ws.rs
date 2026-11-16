@@ -135,7 +135,10 @@ pub fn connect(url: &str) -> io::Result<(WsReader, Arc<Mutex<WsWriter>>)> {
         None => (rest, "/"),
     };
     let (host, port) = match authority.rfind(':') {
-        Some(i) => (&authority[..i], authority[i + 1..].parse::<u16>().unwrap_or(80)),
+        Some(i) => (
+            &authority[..i],
+            authority[i + 1..].parse::<u16>().unwrap_or(80),
+        ),
         None => (authority, 80),
     };
     if std::env::var("KITE_DEBUG_WS").is_ok() {
@@ -180,7 +183,10 @@ pub fn connect(url: &str) -> io::Result<(WsReader, Arc<Mutex<WsWriter>>)> {
             break;
         }
         if hdr.len() > 16384 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "oversized handshake"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "oversized handshake",
+            ));
         }
     }
     let text = String::from_utf8_lossy(&hdr).into_owned();
@@ -214,7 +220,11 @@ pub fn connect(url: &str) -> io::Result<(WsReader, Arc<Mutex<WsWriter>>)> {
     // Anything after the header terminator is already frame data.
     let split = hdr.len().saturating_sub(4);
     let leftover = hdr[split.min(hdr.len())..].to_vec();
-    let leftover = if leftover.starts_with(b"\r\n\r\n") { Vec::new() } else { leftover };
+    let leftover = if leftover.starts_with(b"\r\n\r\n") {
+        Vec::new()
+    } else {
+        leftover
+    };
 
     let writer = Arc::new(Mutex::new(WsWriter {
         s: s.try_clone()?,
@@ -261,7 +271,9 @@ pub fn http_get(port: u16, path: &str) -> io::Result<String> {
         match s.read(&mut chunk) {
             Ok(0) => return Ok(raw_body(&buf)),
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
+            {
                 // No more data: either chunked encoding (body complete as far as
                 // we can tell) or a stalled server. Whatever we have is enough.
                 return Ok(raw_body(&buf));
@@ -270,7 +282,10 @@ pub fn http_get(port: u16, path: &str) -> io::Result<String> {
             Err(e) => return Err(e),
         }
         if buf.len() > 8 * 1024 * 1024 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "oversized http response"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "oversized http response",
+            ));
         }
     }
 }
