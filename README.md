@@ -19,7 +19,7 @@ toolbar, and no window frame.
 | | qutebrowser | kite |
 | --- | --- | --- |
 | Engine | QtWebEngine (Chromium, embedded) | system Chromium, separate process |
-| Shell | Python + Qt | Rust, one 922 KB binary |
+| Shell | Python + Qt | Rust, one 837 KB binary |
 | Keys | Qt event → Python command registry | Chromium key path → one JS handler |
 | UI | Qt widgets | shadow-DOM overlay: one bottom status line |
 | NixOS | package | package + flake + `programs.kite` module |

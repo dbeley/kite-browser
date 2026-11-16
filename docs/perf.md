@@ -10,7 +10,7 @@ kite moves that layer out of the way:
 
 | Layer | qutebrowser | kite |
 | --- | --- | --- |
-| Shell language | Python (CPython + ~1 MB of .pyc) | Rust, 922 KB static binary |
+| Shell language | Python (CPython + ~1 MB of .pyc) | Rust, 837 KB static binary |
 | UI toolkit | Qt widgets + QtWebEngine | none in the shell process |
 | Key handling | Qt event → Python → command registry | Chromium key path → one JS handler |
 | Engine | QtWebEngine (Chromium, embedded) | system Chromium (separate process) |
