@@ -25,6 +25,9 @@ XP=$!
 SP=$!
 sleep 1.2
 export DISPLAY="$DISP"
+# NixOS' chromium wrapper switches to Wayland whenever WAYLAND_DISPLAY is set,
+# which would put the window on the real desktop instead of Xvfb.
+unset WAYLAND_DISPLAY WAYLAND_SOCKET
 export KITE_NO_SANDBOX=1
 # Only ever matches the throwaway bench profile, never the invoking shell.
 export BENCH_KILLPAT="/tmp/kite-bench/st/engine-profile"
