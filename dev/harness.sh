@@ -13,7 +13,7 @@ SRV="$STATE/serve"
 pkill -f "Xvfb $DISP" 2>/dev/null || true
 pkill -f "kite.*--state" 2>/dev/null || true
 sleep 0.3
-rm -rf "$OUT" "$SRV"
+rm -rf "$OUT" "$SRV" "$STATE/engine-profile"
 mkdir -p "$OUT" "$SRV"
 
 # ---------------------------------------------------------------- test pages
@@ -89,6 +89,9 @@ curl -sf --max-time 3 http://127.0.0.1:8808/index.html >/dev/null && echo "serve
 trap 'kill $SRV_PID $XVFB_PID $I3_PID 2>/dev/null || true; pkill -f "user-data-dir=$STATE" 2>/dev/null || true' EXIT
 
 export DISPLAY="$DISP"
+# NixOS' chromium wrapper switches to Wayland whenever WAYLAND_DISPLAY is set,
+# which would put the window on the developer's real desktop instead of Xvfb.
+unset WAYLAND_DISPLAY WAYLAND_SOCKET
 export KITE_HOME="$STATE"
 export XDG_CONFIG_HOME="$STATE/xdg-config"
 export KITE_NO_SANDBOX=1
