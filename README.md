@@ -8,7 +8,11 @@ browser look like if you delete the Python and the Qt, keep the Chromium engine,
 and make the chrome as cheap as a text field?* The target machine is a slow ARM
 board with a keyboard — not a workstation.
 
-![the chrome bar](docs/img/bar.png)
+The chrome is one status line at the bottom of the page, drawn in monospace on a
+grid, in the spirit of a terminal UI: no rounded cards, no shadows, no browser
+toolbar, and no window frame.
+
+![the status line](docs/img/bar.png)
 
 ## The short version
 
@@ -17,7 +21,7 @@ board with a keyboard — not a workstation.
 | Engine | QtWebEngine (Chromium, embedded) | system Chromium, separate process |
 | Shell | Python + Qt | Rust, one 922 KB binary |
 | Keys | Qt event → Python command registry | Chromium key path → one JS handler |
-| UI | Qt widgets | shadow-DOM overlay, no DOM of its own |
+| UI | Qt widgets | shadow-DOM overlay: one bottom status line |
 | NixOS | package | package + flake + `programs.kite` module |
 
 The shell never embeds the engine. It launches Chromium, speaks the Chrome
@@ -58,6 +62,37 @@ Two consequences worth stating plainly:
   so moving the chrome *into* the page is not a compromise, it is the only
   correct shape.
 
+## No Chromium UI, no window frame
+
+Chromium is the engine, not the interface. Three things keep its own chrome out
+of the way:
+
+- **App mode, always.** Every window is created with `--app=<url>`, which gives a
+  single page with no tab strip, no omnibox and no toolbar. Two details matter:
+  Chromium silently refuses `--app=about:blank` and opens a *full browser
+  window* instead, so kite boots on a dark `data:` placeholder and navigates from
+  there; and `Target.createTarget` always builds a tabbed browser window, so new
+  tabs ask the live browser for another app window instead.
+- **No title bar.** With `decorations = false` (the default) kite asks Chromium
+  for an undecorated surface on Wayland, and strips the window-manager frame on
+  X11 with the Motif hint (`_MOTIF_WM_HINTS` via `xdotool` + `xprop`, re-applied
+  to each new tab). Compositors like niri and sway draw no server-side
+  decorations at all, so the page fills its tile edge to edge.
+- **A way out.** `fullscreen = true` (or `kite --fullscreen`) starts the window
+  fullscreen, which removes every frame on every compositor, including ones that
+  ignore Motif hints (GNOME). `kite --decorated` restores a normal window.
+
+```toml
+[general]
+decorations = false   # no title bar / borders
+fullscreen = false    # start fullscreen instead
+```
+
+On Wayland the frame is the compositor's business; kite cannot override a
+compositor that insists on drawing one. If a border or gap remains, the rule
+belongs in the compositor config (for example niri's `border { off }` window
+rule, or sway's `default_border none`).
+
 ## What works (verified)
 
 Checked by driving a real Chromium under a real X server (`dev/harness.sh`):
@@ -71,7 +106,11 @@ Checked by driving a real Chromium under a real X server (`dev/harness.sh`):
   palettes for history, bookmarks, tabs and search engines. Verified: `ope` lists
   `open`, `open-tab`, `tab-undo`, `private`, `external`.
 - **Tabs** — `t`, `d`, `gt`/`gT`, `g1`/`g9`, `u` (reopen closed). Verified:
-  creating, switching and closing change the model correctly.
+  creating, switching and closing change the model correctly, and a new tab is
+  an app window with no Chromium chrome.
+- **Window chrome** — no title bar, no tab strip, no toolbar. Verified under
+  Xvfb + i3 (the WM frame is stripped) and by the Wayland decoration and
+  `--app=` behaviour in `WAYLAND_DEBUG` logs.
 - **Insert mode** — typing in a field switches automatically; `Esc` returns to
   normal. Verified: `gi` focuses the first input and the chip turns green `INS`.
 - **Scrolling** — `j`/`k`, `C-d`/`C-u`, `C-f`/`C-b`, `gg`/`G`, counts. Verified:
@@ -218,12 +257,13 @@ afternoon.
 
 ## Known limitations
 
-1. **Each tab is its own window.** In `--app` mode Chromium gives a window a
-   single tab, so a second `Target.createTarget` opens another window. kite's bar
-   lists all tabs and switching raises the right window, but your window manager
-   will show several windows. A single-window multi-tab setup needs either
-   Chromium's own tab strip (visible chrome) or engine embedding — both are
-   deliberate trade-offs, not bugs.
+1. **Each tab is its own window.** Chromium's app windows hold one page each, so
+   `t` asks the live browser for another app window. kite's status line lists all
+   tabs and switching raises the right window, but your window manager will show
+   several windows. A single-window multi-tab setup needs either Chromium's own
+   tab strip (visible chrome) or engine embedding — both are deliberate
+   trade-offs, not bugs. Private tabs still use a CDP browser context, which
+   means they come back as a tabbed browser window.
 2. **The UI layer runs in the page's main world.** A hostile page could call the
    binding (`__kiteSend`) directly. The fix is an isolated world plus an origin
    check; it is not implemented.
@@ -268,7 +308,8 @@ src/engine.rs   Chromium supervisor and the performance flag set
 src/shell.rs    tabs, navigation, privileged commands, completions, session
 src/store.rs    history, bookmarks, session (JSON, atomic writes)
 src/config.rs   TOML defaults, deep merge, key-sequence normalisation
-src/ui.js       injected chrome: bar, palette, hints, keymap, help
+src/wm.rs       strips the X11 window frame from the engine's windows
+src/ui.js       injected chrome: status line, palette, hints, keymap, help
 nix/            package, NixOS module, desktop entry, icon
 dev/            headless GUI harness, benchmark, GPU-flag probe
 ```
