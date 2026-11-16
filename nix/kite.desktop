@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=kite
+GenericName=Web Browser
+Comment=Keyboard-first browser on the Chromium engine
+Exec=kite %U
+Terminal=false
+Icon=kite
+Categories=Network;WebBrowser;
+MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;
+StartupNotify=true
+StartupWMClass=Chromium
