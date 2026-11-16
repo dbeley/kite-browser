@@ -51,7 +51,11 @@ impl Shell {
         restore: Vec<String>,
     ) -> Result<Shell, String> {
         let startup_mark = Instant::now();
-        cdp.call(None, "Target.setDiscoverTargets", json!({ "discover": true }))?;
+        cdp.call(
+            None,
+            "Target.setDiscoverTargets",
+            json!({ "discover": true }),
+        )?;
 
         let mut shell = Shell {
             cdp,
@@ -124,7 +128,11 @@ impl Shell {
             .to_string();
         let info = self
             .cdp
-            .call(None, "Target.getTargetInfo", json!({ "targetId": target_id }))
+            .call(
+                None,
+                "Target.getTargetInfo",
+                json!({ "targetId": target_id }),
+            )
             .unwrap_or(Value::Null);
         let url = info
             .pointer("/targetInfo/url")
@@ -208,7 +216,9 @@ impl Shell {
 
     /// Push fresh tab/nav state to the visible page's UI layer.
     pub fn push_state(&mut self) {
-        let Some(session) = self.active_session() else { return };
+        let Some(session) = self.active_session() else {
+            return;
+        };
         let idx = self.active;
         let payload = json!({
             "tabs": self.tabs_json(),
@@ -227,7 +237,9 @@ impl Shell {
     }
 
     pub fn toast(&mut self, msg: &str) {
-        let Some(session) = self.active_session() else { return };
+        let Some(session) = self.active_session() else {
+            return;
+        };
         let expr = format!(
             "(()=>{{try{{window.__kite&&window.__kite.toast({})}}catch(e){{}}}})()",
             json!(msg)
@@ -238,11 +250,8 @@ impl Shell {
     pub fn navigate_active(&mut self, url: &str) -> Result<(), String> {
         let session = self.active_session().ok_or("no active tab")?;
         let parsed = self.resolve_url(url);
-        self.cdp.call(
-            Some(&session),
-            "Page.navigate",
-            json!({ "url": parsed }),
-        )?;
+        self.cdp
+            .call(Some(&session), "Page.navigate", json!({ "url": parsed }))?;
         if let Some(t) = self.tabs.get_mut(self.active) {
             t.url = parsed;
             t.loading = true;
@@ -253,9 +262,112 @@ impl Shell {
 
     pub fn new_tab(&mut self, url: &str, background: bool, private: bool) -> Result<usize, String> {
         let parsed = self.resolve_url(url);
-        let mut params = json!({ "url": parsed, "background": true, "newWindow": false });
+        let blank = parsed == "about:blank";
+        // Preferred path: let the live browser open a real app window. A CDP
+        // `Target.createTarget` always builds a tabbed browser window, which
+        // means the tab strip and omnibox the shell exists to avoid.
+        if !private {
+            if let Some(idx) = self.open_app_window(&parsed, blank)? {
+                self.finish_tab(idx, background);
+                return Ok(idx);
+            }
+        }
+        // Private tabs need a CDP browser context, and a fallback in case the
+        // engine refuses the extra window.
+        self.new_tab_cdp(&parsed, blank, background, private)
+    }
+
+    fn finish_tab(&mut self, idx: usize, background: bool) {
+        if let Err(e) = self.prepare(idx) {
+            eprintln!("kite: tab prepare failed: {e}");
+        }
+        if !background {
+            self.activate(idx);
+        }
+        self.session_dirty = true;
+    }
+
+    /// Spawn `--app=<url>` on the live profile and adopt the target the browser
+    /// creates for it. `None` when no new page target shows up in time.
+    fn open_app_window(&mut self, url: &str, blank: bool) -> Result<Option<usize>, String> {
+        let before = self.page_targets()?;
+        self.engine.open_app_window(url)?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            let known = self.page_targets()?;
+            if let Some((id, target_url)) = known
+                .iter()
+                .find(|(id, _)| !before.iter().any(|(b, _)| b == id))
+                .cloned()
+            {
+                let (session, u) = self.attach(&id)?;
+                self.tabs.push(Tab {
+                    id,
+                    session,
+                    url: if blank { "about:blank".to_string() } else { u },
+                    title: String::new(),
+                    loading: true,
+                    private: false,
+                });
+                let idx = self.tabs.len() - 1;
+                if blank {
+                    let session = self.tabs[idx].session.clone();
+                    let _ = self.cdp.call(
+                        Some(&session),
+                        "Page.navigate",
+                        json!({ "url": "about:blank" }),
+                    );
+                }
+                let _ = target_url;
+                return Ok(Some(idx));
+            }
+            std::thread::sleep(Duration::from_millis(120));
+        }
+        Ok(None)
+    }
+
+    fn page_targets(&mut self) -> Result<Vec<(String, String)>, String> {
+        let r = self.cdp.call(None, "Target.getTargets", json!({}))?;
+        let mut out = Vec::new();
+        for t in r
+            .get("targetInfos")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            if t.get("type").and_then(|v| v.as_str()) != Some("page") {
+                continue;
+            }
+            let Some(id) = t.get("targetId").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let url = t
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            out.push((id.to_string(), url));
+        }
+        Ok(out)
+    }
+
+    fn new_tab_cdp(
+        &mut self,
+        parsed: &str,
+        blank: bool,
+        background: bool,
+        private: bool,
+    ) -> Result<usize, String> {
+        let create_url = if blank {
+            crate::engine::PLACEHOLDER
+        } else {
+            parsed
+        };
+        let mut params = json!({ "url": create_url, "background": true, "newWindow": false });
         if private {
-            let ctx = self.cdp.call(None, "Target.createBrowserContext", json!({}))?;
+            let ctx = self
+                .cdp
+                .call(None, "Target.createBrowserContext", json!({}))?;
             if let Some(id) = ctx.get("browserContextId").and_then(|v| v.as_str()) {
                 params["browserContextId"] = json!(id);
             }
@@ -268,21 +380,23 @@ impl Shell {
             .to_string();
         let (session, u) = self.attach(&target_id)?;
         self.tabs.push(Tab {
-            id: target_id.clone(),
+            id: target_id,
             session,
-            url: u,
+            url: if blank { "about:blank".to_string() } else { u },
             title: String::new(),
             loading: true,
             private,
         });
         let idx = self.tabs.len() - 1;
-        if let Err(e) = self.prepare(idx) {
-            eprintln!("kite: tab prepare failed: {e}");
+        if blank {
+            let session = self.tabs[idx].session.clone();
+            let _ = self.cdp.call(
+                Some(&session),
+                "Page.navigate",
+                json!({ "url": "about:blank" }),
+            );
         }
-        if !background {
-            self.activate(idx);
-        }
-        self.session_dirty = true;
+        self.finish_tab(idx, background);
         Ok(idx)
     }
 
@@ -291,7 +405,9 @@ impl Shell {
             return;
         }
         let id = self.tabs[idx].id.clone();
-        let _ = self.cdp.call(None, "Target.activateTarget", json!({ "targetId": id }));
+        let _ = self
+            .cdp
+            .call(None, "Target.activateTarget", json!({ "targetId": id }));
         self.active = idx;
         self.session_dirty = true;
         self.push_state();
@@ -310,7 +426,9 @@ impl Shell {
         if self.closed.len() > 20 {
             self.closed.remove(0);
         }
-        let _ = self.cdp.call(None, "Target.closeTarget", json!({ "targetId": tab.id }));
+        let _ = self
+            .cdp
+            .call(None, "Target.closeTarget", json!({ "targetId": tab.id }));
         if self.tabs.is_empty() {
             self.quit = true;
             return;
@@ -357,9 +475,7 @@ impl Shell {
                 return engine.replace("{}", &urlencode(rest));
             }
         }
-        let hostish = !s.contains(' ')
-            && (s.contains('.') || s.contains(':'))
-            && !s.ends_with('.');
+        let hostish = !s.contains(' ') && (s.contains('.') || s.contains(':')) && !s.ends_with('.');
         if hostish {
             return format!("https://{s}");
         }
@@ -614,20 +730,26 @@ impl Shell {
         };
         let cmd = msg.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
         if crate::engine::env_flag("KITE_DEBUG_BIND") {
-            eprintln!("[bind] cmd={cmd} session={:?}", session.as_deref().map(|s| &s[..8.min(s.len())]));
+            eprintln!(
+                "[bind] cmd={cmd} session={:?}",
+                session.as_deref().map(|s| &s[..8.min(s.len())])
+            );
         }
         let args = msg.get("args").cloned().unwrap_or(Value::Null);
         let rid = msg.get("rid").cloned().unwrap_or(Value::Null);
-        let arg_str = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let arg_str = |k: &str| {
+            args.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
         let arg_u = |k: &str| args.get(k).and_then(|v| v.as_u64()).map(|n| n as usize);
         let arg_b = |k: &str| args.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
 
         match cmd {
             "hello" => {
                 // A fresh document booted: hand it config + tab state.
-                let idx = self
-                    .tab_by_session(&session)
-                    .unwrap_or(self.active);
+                let idx = self.tab_by_session(&session).unwrap_or(self.active);
                 let boot = self.boot_payload(idx);
                 let Some(s) = session.clone() else { return };
                 let expr = format!(
@@ -656,7 +778,10 @@ impl Shell {
                 let n = self.tabs.len();
                 match op.as_str() {
                     "new" => {
-                        let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("about:blank");
+                        let url = args
+                            .get("url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("about:blank");
                         if let Err(e) = self.new_tab(url, false, arg_b("private")) {
                             eprintln!("kite: tab new failed: {e}");
                             self.toast(&format!("tab failed: {e}"));
@@ -670,7 +795,11 @@ impl Shell {
                     "select" => self.activate(arg_u("index").unwrap_or(0)),
                     "undo" => {
                         if let Some(c) = self.closed.pop() {
-                            let label = if c.title.is_empty() { c.url.clone() } else { c.title.clone() };
+                            let label = if c.title.is_empty() {
+                                c.url.clone()
+                            } else {
+                                c.title.clone()
+                            };
                             let _ = self.new_tab(&c.url, false, false);
                             self.toast(&format!("reopened {label}"));
                         } else {
@@ -679,7 +808,11 @@ impl Shell {
                     }
                     _ => {}
                 }
-                self.reply(session, rid, json!({ "ok": true, "tabs": self.tabs_json() }));
+                self.reply(
+                    session,
+                    rid,
+                    json!({ "ok": true, "tabs": self.tabs_json() }),
+                );
             }
             "history" => {
                 let op = arg_str("op");
@@ -695,11 +828,9 @@ impl Shell {
                 if op == "hardreload" {
                     if let Some(t) = self.tabs.iter().find(|t| t.session == s) {
                         let url = t.url.clone();
-                        let _ = self.cdp.call(
-                            Some(&s),
-                            "Page.reload",
-                            json!({ "ignoreCache": true }),
-                        );
+                        let _ =
+                            self.cdp
+                                .call(Some(&s), "Page.reload", json!({ "ignoreCache": true }));
                         let _ = url;
                     }
                 } else if !js.is_empty() {
@@ -717,7 +848,11 @@ impl Shell {
             "yank" => {
                 let text = arg_str("text");
                 let ok = clipboard_write(&text);
-                self.toast(if ok { "yanked" } else { "clipboard unavailable" });
+                self.toast(if ok {
+                    "yanked"
+                } else {
+                    "clipboard unavailable"
+                });
                 self.reply(session, rid, json!({ "ok": ok }));
             }
             "paste" => {
@@ -726,24 +861,44 @@ impl Shell {
             }
             "bookmark" => {
                 let op = arg_str("op");
-                let url = if arg_str("url").is_empty() { self.current_url() } else { arg_str("url") };
-                let title = if arg_str("title").is_empty() { self.current_title() } else { arg_str("title") };
+                let url = if arg_str("url").is_empty() {
+                    self.current_url()
+                } else {
+                    arg_str("url")
+                };
+                let title = if arg_str("title").is_empty() {
+                    self.current_title()
+                } else {
+                    arg_str("title")
+                };
                 match op.as_str() {
                     "toggle" => {
                         let added = self.store.toggle_bookmark(&url, &title);
-                        self.toast(if added { "bookmarked" } else { "bookmark removed" });
+                        self.toast(if added {
+                            "bookmarked"
+                        } else {
+                            "bookmark removed"
+                        });
                         self.push_state();
                     }
                     _ => {}
                 }
-                self.reply(session, rid, json!({ "ok": true, "bookmarks": self.store.bookmarks_json() }));
+                self.reply(
+                    session,
+                    rid,
+                    json!({ "ok": true, "bookmarks": self.store.bookmarks_json() }),
+                );
             }
             "quit" => {
                 self.quit = true;
                 self.save_session_if_due(true);
             }
             "external" => {
-                let url = if arg_str("url").is_empty() { self.current_url() } else { arg_str("url") };
+                let url = if arg_str("url").is_empty() {
+                    self.current_url()
+                } else {
+                    arg_str("url")
+                };
                 let _ = std::process::Command::new("xdg-open").arg(url).spawn();
             }
             "title" => {
@@ -764,11 +919,17 @@ impl Shell {
     }
 
     fn current_url(&self) -> String {
-        self.tabs.get(self.active).map(|t| t.url.clone()).unwrap_or_default()
+        self.tabs
+            .get(self.active)
+            .map(|t| t.url.clone())
+            .unwrap_or_default()
     }
 
     fn current_title(&self) -> String {
-        self.tabs.get(self.active).map(|t| t.title.clone()).unwrap_or_default()
+        self.tabs
+            .get(self.active)
+            .map(|t| t.title.clone())
+            .unwrap_or_default()
     }
 
     fn completions(&self, kind: &str, q: &str, limit: usize) -> Vec<Value> {
@@ -788,7 +949,11 @@ impl Shell {
                         || b.url.to_lowercase().contains(&ql)
                         || b.title.to_lowercase().contains(&ql)
                     {
-                        let t = if b.title.is_empty() { b.url.clone() } else { b.title.clone() };
+                        let t = if b.title.is_empty() {
+                            b.url.clone()
+                        } else {
+                            b.title.clone()
+                        };
                         out.push(json!({ "text": t, "detail": b.url, "kind": "bookmark" }));
                     }
                     if out.len() >= limit {
@@ -798,9 +963,18 @@ impl Shell {
             }
             "tab" => {
                 for (i, t) in self.tabs.iter().enumerate() {
-                    let label = if t.title.is_empty() { t.url.clone() } else { t.title.clone() };
-                    if ql.is_empty() || label.to_lowercase().contains(&ql) || t.url.to_lowercase().contains(&ql) {
-                        out.push(json!({ "text": label, "detail": t.url, "kind": "tab", "index": i }));
+                    let label = if t.title.is_empty() {
+                        t.url.clone()
+                    } else {
+                        t.title.clone()
+                    };
+                    if ql.is_empty()
+                        || label.to_lowercase().contains(&ql)
+                        || t.url.to_lowercase().contains(&ql)
+                    {
+                        out.push(
+                            json!({ "text": label, "detail": t.url, "kind": "tab", "index": i }),
+                        );
                     }
                 }
             }
@@ -813,9 +987,14 @@ impl Shell {
                 }
                 for b in &self.store.bookmarks {
                     if !ql.is_empty()
-                        && (b.url.to_lowercase().contains(&ql) || b.title.to_lowercase().contains(&ql))
+                        && (b.url.to_lowercase().contains(&ql)
+                            || b.title.to_lowercase().contains(&ql))
                     {
-                        let t = if b.title.is_empty() { b.url.clone() } else { b.title.clone() };
+                        let t = if b.title.is_empty() {
+                            b.url.clone()
+                        } else {
+                            b.title.clone()
+                        };
                         out.push(json!({ "text": t, "detail": b.url, "kind": "bookmark" }));
                     }
                     if out.len() >= limit {
@@ -823,7 +1002,11 @@ impl Shell {
                     }
                 }
                 for h in self.store.search_history(&q, 8) {
-                    let t = if h.title.is_empty() { h.url.clone() } else { h.title.clone() };
+                    let t = if h.title.is_empty() {
+                        h.url.clone()
+                    } else {
+                        h.title.clone()
+                    };
                     out.push(json!({ "text": t, "detail": h.url, "kind": "history" }));
                 }
                 if !q.is_empty() {
@@ -882,7 +1065,9 @@ fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{b:02X}")),
         }
