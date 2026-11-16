@@ -1204,7 +1204,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("tab-close", "close current tab"),
     ("tab-next", "next tab"),
     ("tab-prev", "previous tab"),
-    ("tab-undo", "reopen last closed tab"),
+    ("tab-undo", "reopen the last closed window"),
     ("q", "quit kite"),
     ("qall", "quit kite"),
     ("reload", "reload page"),
