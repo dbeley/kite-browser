@@ -21,7 +21,7 @@ use store::Store;
 const UI_JS: &str = include_str!("ui.js");
 /// Must match `VERSION` at the top of ui.js — the selftest asserts the injected
 /// layer is actually the one compiled into this binary.
-const UI_VERSION: &str = "0.2.0";
+const UI_VERSION: &str = "0.3.0";
 
 struct Args {
     config: Option<std::path::PathBuf>,

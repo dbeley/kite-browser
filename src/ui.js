@@ -12,7 +12,7 @@
  */
 (() => {
   'use strict';
-  const VERSION = '0.2.0';
+  const VERSION = '0.3.0';
   if (window.__kite && window.__kite.version === VERSION) return;
   let isTop = false;
   try { isTop = window.top === window; } catch (e) { isTop = false; }
@@ -71,115 +71,135 @@
   // parser — which silently produced a blank page. Never touch DOM before the
   // parser has something to attach to.
   let HOST = null, ROOT = null, UI = false;
-  let bar, tabsEl, urlEl, chip, badges, pal, pinput, plist, pmeta, psig, hintLayer, toasts, helpEl, loadEl;
+  let chromeEl, bar, tabsEl, urlEl, chip, badges, pendingEl, titleEl, spinEl;
+  let pal, pinput, plist, pmeta, psig, hintLayer, toasts, helpEl;
   const CSS = `
     :host { all: initial; }
-    * { box-sizing: border-box; font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
-    #bar {
-      position: fixed; top: 0; left: 0; right: 0; height: 27px;
-      display: flex; align-items: stretch; gap: 0;
-      background: rgba(18,19,23,.96); color: #c9d1d9;
-      font-size: 12px; line-height: 27px;
-      border-bottom: 1px solid rgba(255,255,255,.07);
-      transform: translateY(-28px); transition: transform .12s ease-out;
+    * { box-sizing: border-box; }
+    #chrome, #help {
+      font-family: ui-monospace, "Iosevka Term", "JetBrains Mono", "Fira Mono",
+                   "DejaVu Sans Mono", "SF Mono", Menlo, Consolas, monospace;
+      font-variant-ligatures: none; text-rendering: geometricPrecision;
+      -webkit-font-smoothing: antialiased;
+    }
+    #chrome {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 2147483647;
+      display: flex; flex-direction: column;
+      background: #0b0e11; color: #c2cad4;
+      font-size: 11.5px; line-height: 1; letter-spacing: 0; font-weight: 400;
+      border-top: 1px solid #20272f;
+      transform: translateY(100%); transition: transform .1s steps(2, end);
       will-change: transform; pointer-events: none;
-      box-shadow: 0 1px 10px rgba(0,0,0,.35);
     }
-    #bar.on { transform: translateY(0); pointer-events: auto; }
-    #tabs { display: flex; align-items: stretch; overflow: hidden; flex: 0 1 auto; min-width: 0; }
+    #chrome.on { transform: none; pointer-events: auto; }
+
+    /* tabs: one line, active tab in inverse video */
+    #tabs { display: flex; align-items: stretch; height: 19px; overflow: hidden; background: #0b0e11; }
+    #tabs.off { display: none; }
+    #tabs:not(.off):not(:empty) { border-bottom: 1px solid #1a2028; }
     .tab {
-      display: flex; align-items: center; gap: 5px; padding: 0 9px; max-width: 190px;
-      border-right: 1px solid rgba(255,255,255,.06); color: #7d8590;
-      white-space: nowrap; overflow: hidden; cursor: pointer; font-size: 11.5px;
+      display: flex; align-items: center; gap: 7px; padding: 0 9px; max-width: 30ch;
+      white-space: nowrap; overflow: hidden; color: #626e7d; cursor: pointer; font-size: 11px;
     }
-    .tab .ix { color: #4b5563; font-size: 10px; }
+    .tab .ix { color: #3d4652; }
     .tab .lbl { overflow: hidden; text-overflow: ellipsis; }
-    .tab.act { color: #f0f6fc; background: rgba(255,255,255,.05); box-shadow: inset 0 -2px 0 #e3b341; }
-    .tab.act .ix { color: #e3b341; }
+    .tab.act { background: #c2cad4; color: #0b0e11; }
+    .tab.act .ix { color: #0b0e11; opacity: .5; }
     .tab.priv .lbl { font-style: italic; }
-    #omni { flex: 1 1 auto; display: flex; align-items: center; gap: 8px; padding: 0 10px; min-width: 0; }
-    #chip {
-      font-size: 9.5px; letter-spacing: .06em; padding: 1px 5px; border-radius: 3px;
-      background: #1f6feb; color: #fff; font-weight: 700; flex: 0 0 auto;
-    }
-    #chip.ins { background: #238636; } #chip.hnt { background: #9e6a03; }
-    #chip.cmd { background: #8957e5; } #chip.psv { background: #444c56; }
-    #url { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #adbac7; }
-    #url b { color: #e3b341; font-weight: 600; }
-    #badges { display: flex; gap: 6px; color: #6e7681; font-size: 11px; flex: 0 0 auto; }
-    #badges .b { padding: 0 3px; }
-    #load { position: fixed; top: 27px; left: 0; height: 2px; width: 0; background: #e3b341; opacity: 0; transition: width .2s linear, opacity .2s; z-index: 2147483647; }
-    #load.on { opacity: 1; }
-    #toasts { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; align-items: center; }
-    .toast {
-      background: rgba(22,24,29,.97); color: #e6edf3; border: 1px solid rgba(255,255,255,.1);
-      padding: 5px 11px; border-radius: 5px; font-size: 12px; box-shadow: 0 6px 22px rgba(0,0,0,.5);
-      opacity: 0; animation: tin .16s ease-out forwards;
-    }
-    @keyframes tin { to { opacity: 1; } }
-    #pal {
-      position: fixed; top: 31px; left: 50%; transform: translateX(-50%);
-      width: min(760px, 74vw); background: rgba(16,17,21,.985);
-      border: 1px solid rgba(255,255,255,.12); border-radius: 7px;
-      box-shadow: 0 18px 60px rgba(0,0,0,.6); overflow: hidden; display: none;
-      color: #e6edf3; font-size: 13px;
-    }
-    #pal.on { display: block; }
-    #prow { display: flex; align-items: center; gap: 7px; padding: 9px 11px; border-bottom: 1px solid rgba(255,255,255,.08); }
-    #psig { color: #e3b341; font-weight: 700; }
+
+    /* status line */
+    #bar { display: flex; align-items: center; gap: 10px; height: 21px; padding: 0 9px; overflow: hidden; }
+    #bar.off { display: none; }
+    #chip { color: #8fbf8f; font-weight: 700; flex: 0 0 auto; }
+    #chip.ins { color: #d7b06a; }
+    #chip.hnt, #chip.cmd { color: #9fb0c2; }
+    #chip.psv { color: #626e7d; }
+    #pending { color: #d7b06a; flex: 0 0 auto; }
+    #pending:empty { display: none; }
+    #title { color: #626e7d; flex: 0 1 auto; max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #title:empty { display: none; }
+    #url { color: #c2cad4; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #url b { color: #8fbf8f; font-weight: 400; }
+    #badges { display: flex; align-items: center; gap: 10px; color: #626e7d; flex: 0 0 auto; }
+    #badges:empty { display: none; }
+    #spin { width: 1.2ch; flex: 0 0 auto; text-align: center; color: #8fbf8f; }
+
+    /* command line: full-width panel above the status line */
+    #pal { display: none; flex-direction: column; max-height: 44vh; background: #0d1117; border-bottom: 1px solid #20272f; }
+    #pal.on { display: flex; }
+    #prow { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid #19202a; }
+    #psig { color: #8fbf8f; flex: 0 0 auto; }
     #pinput {
-      flex: 1 1 auto; background: transparent; border: 0; outline: 0; color: #f0f6fc;
-      font-size: 13.5px; font-family: inherit; padding: 0; caret-color: #e3b341;
+      flex: 1 1 auto; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent;
+      color: #dfe5ec; font: inherit; font-size: 12.5px; caret-color: #8fbf8f;
     }
-    #pinput::placeholder { color: #4d5560; }
-    #pmeta { color: #6e7681; font-size: 11px; flex: 0 0 auto; }
-    #plist { max-height: min(46vh, 420px); overflow-y: auto; overscroll-behavior: contain; }
-    .it { display: flex; gap: 9px; padding: 5px 11px; align-items: baseline; cursor: pointer; }
-    .it .k { color: #6e7681; font-size: 10.5px; width: 62px; flex: 0 0 auto; text-transform: uppercase; }
-    .it .t { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .it .d { color: #545d68; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46%; flex: 0 1 auto; }
-    .it.sel { background: rgba(227,179,65,.14); box-shadow: inset 2px 0 0 #e3b341; }
-    .it.sel .t { color: #fff; }
-    #pfoot { padding: 4px 11px; border-top: 1px solid rgba(255,255,255,.06); color: #4d5560; font-size: 10.5px; display: flex; gap: 12px; }
+    #pinput::placeholder { color: #414b57; }
+    #pmeta { flex: 0 0 auto; color: #414b57; font-size: 11px; }
+    #plist { overflow-y: auto; overscroll-behavior: contain; padding: 3px 0 5px; }
+    #plist:empty { display: none; }
+    .it { display: flex; align-items: baseline; gap: 10px; padding: 3px 10px; white-space: nowrap; cursor: pointer; font-size: 12px; }
+    .it .mk { width: 1ch; flex: 0 0 auto; color: #414b57; }
+    .it .k { width: 9ch; flex: 0 0 auto; color: #515c69; font-size: 11px; }
+    .it .t { flex: 0 1 24ch; overflow: hidden; text-overflow: ellipsis; color: #dfe5ec; }
+    .it .d { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; color: #515c69; font-size: 11px; }
+    .it.sel { background: #c2cad4; }
+    .it.sel .mk, .it.sel .k, .it.sel .t, .it.sel .d { color: #0b0e11; }
+
+    /* hint labels */
     #hints { position: fixed; inset: 0; pointer-events: none; }
     .h {
-      position: absolute; font-size: 10.5px; font-weight: 700; line-height: 1;
-      padding: 2px 3px; border-radius: 3px; background: #e3b341; color: #10131a;
-      box-shadow: 0 1px 5px rgba(0,0,0,.55); text-transform: lowercase;
-      border: 1px solid rgba(0,0,0,.35); letter-spacing: .02em;
+      position: absolute; padding: 2px 4px; font-size: 10.5px; font-weight: 700; line-height: 1;
+      letter-spacing: .04em; background: #8fbf8f; color: #0b0e11; border: 1px solid #0b0e11;
+      text-transform: lowercase;
     }
-    .h.match { background: #3fb950; } .h.dim { opacity: .22; }
+    .h.dim { opacity: .16; }
+    .h.match { background: #0b0e11; color: #8fbf8f; border-color: #8fbf8f; }
+
+    /* messages */
+    #toasts { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 5px 9px 0; }
+    #toasts:empty { display: none; }
+    .toast { padding: 3px 7px; background: #12171e; color: #a9b6c6; border-left: 2px solid #8fbf8f; font-size: 11px; }
+
+    /* help: a full-screen pager, two columns of keys */
     #help {
-      position: fixed; inset: 6vh 50% auto; transform: translateX(-50%);
-      width: min(900px, 92vw); max-height: 86vh; overflow: auto; display: none;
-      background: rgba(13,14,18,.99); border: 1px solid rgba(255,255,255,.12);
-      border-radius: 8px; padding: 18px 22px; color: #c9d1d9; font-size: 12.5px;
-      box-shadow: 0 24px 80px rgba(0,0,0,.7); z-index: 2147483647;
+      position: fixed; inset: 0; display: none; z-index: 2147483647; overflow: auto;
+      background: #0b0e11; color: #c2cad4; font-size: 12px; line-height: 1.35;
     }
     #help.on { display: block; }
-    #help h1 { font-size: 14px; margin: 0 0 4px; color: #f0f6fc; font-weight: 600; }
-    #help p.sub { margin: 0 0 14px; color: #6e7681; font-size: 11.5px; }
-    #help h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #e3b341; margin: 16px 0 6px; }
-    #help table { border-collapse: collapse; width: 100%; }
-    #help td { padding: 2px 0; vertical-align: top; }
-    #help td.k { width: 190px; color: #adbac7; }
-    #help kbd { background: #1c2128; border: 1px solid #30363d; border-radius: 3px; padding: 0 4px; font-size: 11px; color: #e6edf3; margin-right: 3px; }
+    #help .head {
+      position: sticky; top: 0; display: flex; justify-content: space-between; gap: 12px;
+      padding: 7px 12px; background: #0b0e11; border-bottom: 1px solid #1a2028; color: #626e7d;
+    }
+    #help .head b { color: #8fbf8f; font-weight: 700; }
+    #help .body { padding: 4px 12px 32px; }
+    #help .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 30px; }
+    #help h2 {
+      display: flex; align-items: center; gap: 9px;
+      margin: 16px 0 6px; font-size: 11px; font-weight: 400; color: #626e7d;
+    }
+    #help h2::after { content: ""; flex: 1 1 auto; height: 1px; background: #1a2028; }
+    #help .row { display: flex; gap: 10px; padding: 1px 0; min-width: 0; }
+    #help .row .k { flex: 0 0 13ch; color: #dfe5ec; }
+    #help .row .a { color: #626e7d; }
+    #help kbd { background: none; border: 0; padding: 0; color: inherit; font: inherit; }
   `;
+
   const HTML = `
-    <div id="load"></div>
-    <div id="bar">
+    <div id="chrome">
+      <div id="toasts"></div>
+      <div id="pal">
+        <div id="prow"><span id="psig">:</span><input id="pinput" spellcheck="false" autocomplete="off" placeholder=""><span id="pmeta"></span></div>
+        <div id="plist"></div>
+      </div>
       <div id="tabs"></div>
-      <div id="omni"><span id="chip">NOR</span><span id="url"></span><span id="badges"></span></div>
-    </div>
-    <div id="pal">
-      <div id="prow"><span id="psig">:</span><input id="pinput" spellcheck="false" autocomplete="off" placeholder=""><span id="pmeta"></span></div>
-      <div id="plist"></div>
-      <div id="pfoot"><span>tab next</span><span>CR open</span><span>C-CR new tab</span><span>esc cancel</span></div>
+      <div id="bar">
+        <span id="chip">NOR</span><span id="pending"></span><span id="title"></span><span id="url"></span><span id="spin"></span><span id="badges"></span>
+      </div>
     </div>
     <div id="hints"></div>
-    <div id="toasts"></div>
     <div id="help"></div>
   `;
+
   function ensureUI() {
     if (UI) return true;
     const de = document.documentElement;
@@ -191,10 +211,11 @@
     ROOT.innerHTML = '<style>' + CSS + '</style>' + HTML;
     de.appendChild(HOST);
     const $ = (id) => ROOT.getElementById(id);
-    bar = $('bar'); tabsEl = $('tabs'); urlEl = $('url'); chip = $('chip');
-    badges = $('badges'); pal = $('pal'); pinput = $('pinput'); plist = $('plist');
+    chromeEl = $('chrome'); bar = $('bar'); tabsEl = $('tabs'); urlEl = $('url');
+    chip = $('chip'); badges = $('badges'); pendingEl = $('pending'); titleEl = $('title');
+    spinEl = $('spin'); pal = $('pal'); pinput = $('pinput'); plist = $('plist');
     pmeta = $('pmeta'); psig = $('psig'); hintLayer = $('hints'); toasts = $('toasts');
-    helpEl = $('help'); loadEl = $('load');
+    helpEl = $('help');
     UI = true;
     bindUI();
     return true;
@@ -222,35 +243,38 @@
     const [label, cls] = MODE_CHIP[S.mode] || MODE_CHIP.normal;
     chip.textContent = label;
     chip.className = cls;
+    pendingEl.textContent = S.count || S.seq.join('');
+    const title = (S.title || document.title || '').trim();
+    titleEl.textContent = title && title !== S.url ? title : '';
     urlEl.innerHTML = prettyUrl(S.url || location.href);
     let b = '';
-    if (S.loading) b += '<span class="b">…</span>';
-    if (S.bookmarked) b += '<span class="b">★</span>';
+    if (S.bookmarked) b += '<span class="b">bm</span>';
     if (S.private) b += '<span class="b">priv</span>';
     if (S.tabs.length > 1) b += '<span class="b">' + (S.activeIndex + 1) + '/' + S.tabs.length + '</span>';
-    if (S.zoom !== 1) b += '<span class="b">' + Math.round(S.zoom * 100) + '%</span>';
+    if (S.zoom && S.zoom !== 1) b += '<span class="b">' + Math.round(S.zoom * 100) + '%</span>';
     badges.innerHTML = b;
+    bar.classList.toggle('off', S.cfg.settings.status === false);
 
     if (S.tabs.length > 1) {
       let h = '';
       S.tabs.forEach((t, i) => {
-        const lbl = (t.title || t.url || 'new tab').slice(0, 42);
+        const lbl = (t.title || t.url || 'new tab').replace(/\s+/g, ' ').slice(0, 40);
         h += '<div class="tab' + (i === S.activeIndex ? ' act' : '') + (t.private ? ' priv' : '') +
           '" data-i="' + i + '"><span class="ix">' + (i + 1) + '</span><span class="lbl">' +
-          lbl.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</span></div>';
+          esc(lbl) + '</span></div>';
       });
       tabsEl.innerHTML = h;
-      tabsEl.style.display = 'flex';
+      tabsEl.classList.remove('off');
     } else {
       tabsEl.innerHTML = '';
-      tabsEl.style.display = 'none';
+      tabsEl.classList.add('off');
     }
   }
 
   function showBar(sticky) {
     if (!UI && !ensureUI()) return;
     renderBar();
-    bar.classList.add('on');
+    chromeEl.classList.add('on');
     if (sticky) S.pinned = true;
     clearTimeout(S.hideTimer);
     if (S.cfg.settings.bar === 'always') return;
@@ -260,34 +284,34 @@
     if (S.cfg.settings.bar === 'always') return;
     if (S.pinned && (S.mode !== 'normal' || (S.cmd && S.cmd.open))) return;
     if (S.mode !== 'normal' || (S.cmd && S.cmd.open)) return;
-    bar.classList.remove('on');
+    chromeEl.classList.remove('on');
   }
   function unpin() { S.pinned = false; clearTimeout(S.hideTimer); S.hideTimer = setTimeout(maybeHideBar, 600); }
 
   function toast(msg, ms) {
     if (!UI && !ensureUI()) return;
+    // The message lives in the same bottom stack, so reveal it with the bar.
+    showBar();
     const el = document.createElement('div');
     el.className = 'toast';
     el.textContent = msg;
     toasts.appendChild(el);
-    setTimeout(() => {
-      el.style.transition = 'opacity .2s';
-      el.style.opacity = '0';
-      setTimeout(() => el.remove(), 220);
-    }, ms || 1700);
+    setTimeout(() => el.remove(), ms || 1700);
   }
 
+  // A spinner in the status line: no progress bar, no layout thrash, and it
+  // reads like a terminal instead of a browser.
+  const SPIN = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  let spinTimer = 0;
   function setLoading(on) {
-    if (!UI && !ensureUI()) return;
     S.loading = !!on;
-    loadEl.classList.toggle('on', S.loading);
-    if (S.loading) {
-      loadEl.style.width = '22%';
-      setTimeout(() => { if (S.loading) loadEl.style.width = '68%'; }, 120);
-    } else {
-      loadEl.style.width = '100%';
-      setTimeout(() => { loadEl.style.width = '0'; }, 180);
-    }
+    clearInterval(spinTimer);
+    spinTimer = 0;
+    if (!UI && !ensureUI()) return;
+    if (!S.loading) { spinEl.textContent = ''; return; }
+    let i = 0;
+    spinEl.textContent = SPIN[0];
+    spinTimer = setInterval(() => { spinEl.textContent = SPIN[++i % SPIN.length]; }, 90);
   }
 
   /* ------------------------------------------------------------ scrolling */
@@ -651,11 +675,11 @@
       d.className = 'h';
       d.textContent = labs[i];
       const w = Math.max(12, labs[i].length * 7 + 6);
-      // Keep labels clear of the chrome bar, which overlays the top strip.
-      const barH = bar.classList.contains('on') ? 29 : 0;
-      const top = c.r.top < barH ? Math.min(c.r.bottom + 2, window.innerHeight - 14) : c.r.top + Math.min(c.r.height / 2 - 7, 20);
+      // Keep labels clear of the chrome, which overlays the bottom strip.
+      const h = chromeEl && chromeEl.classList.contains('on') ? chromeEl.offsetHeight : 0;
+      const top = Math.min(c.r.top + Math.min(c.r.height / 2 - 7, 20), window.innerHeight - 16 - h);
       d.style.left = Math.max(0, Math.min(window.innerWidth - w, c.r.left)) + 'px';
-      d.style.top = Math.max(barH, top) + 'px';
+      d.style.top = Math.max(0, top) + 'px';
       hintLayer.appendChild(d);
       S.hint.items.push({ el: c.el, label: labs[i], node: d, href: c.el.href || '' });
     });
@@ -733,8 +757,8 @@
     switch (kind) {
       case 'command': return { sig: ':', ph: 'command', meta: '' };
       case 'find': return { sig: '/', ph: 'find in page', meta: '' };
-      case 'bookmark': return { sig: '★', ph: 'bookmarks', meta: '' };
-      case 'history': return { sig: '↺', ph: 'history', meta: '' };
+      case 'bookmark': return { sig: '#', ph: 'bookmarks', meta: '' };
+      case 'history': return { sig: '>', ph: 'history', meta: '' };
       default: return { sig: ':', ph: 'open url, search, or pick', meta: '' };
     }
   }
@@ -795,14 +819,16 @@
   function paletteRender() {
     if (!S.cmd) return;
     const items = S.cmd.items;
+    const showKind = S.cmd.kind === 'open';
     let h = '';
     items.forEach((it, i) => {
       const cls = i === S.cmd.sel ? ' sel' : '';
       const label = it.kind === 'command' ? it.text : (it.text || it.detail || '');
-      const detail = it.kind === 'command' ? (it.detail || '') : (it.detail || '');
-      h += '<div class="it' + cls + '" data-i="' + i + '"><span class="k">' +
-        (it.kind || '') + '</span><span class="t">' + esc(label) +
-        '</span><span class="d">' + esc(detail) + '</span></div>';
+      h += '<div class="it' + cls + '" data-i="' + i + '">' +
+        '<span class="mk">' + (i === S.cmd.sel ? '>' : '') + '</span>' +
+        (showKind ? '<span class="k">' + esc(it.kind || '') + '</span>' : '') +
+        '<span class="t">' + esc(label) + '</span>' +
+        '<span class="d">' + esc(it.detail || '') + '</span></div>';
     });
     plist.innerHTML = h;
     pmeta.textContent = items.length ? (S.cmd.sel + 1) + '/' + items.length : '';
@@ -974,20 +1000,23 @@
     if (!UI && !ensureUI()) return;
     helpOpen = force === undefined ? !helpOpen : !!force;
     if (!helpOpen) { helpEl.classList.remove('on'); return; }
-    const modes = Object.keys(S.cfg.keymap).filter((m) => m === 'normal' || m === 'insert');
-    let h = '<h1>kite ' + VERSION + '</h1><p class="sub">' +
-      'keyboard-first Chromium shell — press <kbd>esc</kbd> to close. ' +
-      'Inputs focus automatically (insert mode); <kbd>esc</kbd> returns to normal mode.</p>';
+    const modes = Object.keys(S.cfg.keymap)
+      .filter((m) => m === 'normal' || m === 'insert')
+      .sort((a, b) => (a === 'normal' ? -1 : b === 'normal' ? 1 : 0));
+    let h = '<div class="head"><span><b>kite ' + esc(VERSION) + '</b> — keys</span>' +
+      '<span>esc / q close</span></div><div class="body">';
     for (const m of modes) {
-      h += '<h2>' + esc(m) + ' mode</h2><table>';
+      h += '<h2>' + esc(m) + '</h2><div class="grid">';
       const entries = Object.entries(S.cfg.keymap[m] || {});
       entries.sort((a, b) => a[1].localeCompare(b[1]));
       for (const [k, a] of entries) {
-        h += '<tr><td class="k">' + k.split(' ').map((x) => '<kbd>' + esc(x) + '</kbd>').join('') +
-          '</td><td>' + esc(a) + '</td></tr>';
+        h += '<div class="row"><span class="k">' +
+          k.split(' ').map((x) => '<kbd>' + esc(x) + '</kbd>').join('') +
+          '</span><span class="a">' + esc(a) + '</span></div>';
       }
-      h += '</table>';
+      h += '</div>';
     }
+    h += '</div>';
     helpEl.innerHTML = h;
     helpEl.classList.add('on');
   }
@@ -1015,7 +1044,7 @@
       if (S.zoom !== 1) setZoom(S.zoom);
       setLoading(false);
       renderBar();
-      if (S.cfg.settings.bar === 'always') bar.classList.add('on');
+      if (S.cfg.settings.bar === 'always') chromeEl.classList.add('on');
       else showBar();
       S.home = location.href;
     },
@@ -1064,7 +1093,7 @@
   else window.addEventListener('load', onLoad, { once: true });
   document.addEventListener('DOMContentLoaded', () => {
     ensureUI();
-    if (S.cfg.settings.bar === 'always' && UI) bar.classList.add('on');
+    if (S.cfg.settings.bar === 'always' && UI) chromeEl.classList.add('on');
   }, { once: true });
 
   // Scroll hides hints (labels are viewport-positioned).
