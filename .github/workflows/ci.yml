@@ -10,7 +10,17 @@ jobs:
       # clipboard helpers. No distro packages to guess at.
       - run: nix develop -c cargo test --release
       - run: nix develop -c cargo build --release
-      # Real X server, real WM, real Chromium: keys, chrome, windows.
+      # Real X server, real WM, real engine: keys, chrome, windows.
+      # The dev shell points KITE_ENGINE at ungoogled-chromium (the shipped
+      # default), so this is the engine users actually get.
       - run: nix develop -c ./dev/harness.sh
         env:
           KITE_SCENARIO: basic
+      # And the same smoke test on plain chromium, so the fallback engine cannot
+      # rot behind the default.
+      - run: nix develop -c ./dev/harness.sh
+        env:
+          KITE_SCENARIO: basic
+          KITE_ENGINE: chromium
+          KITE_OUT: /tmp/kite-shots-chromium
+          KITE_DISP: ":98"
