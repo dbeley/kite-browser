@@ -133,9 +133,11 @@ Checked by driving a real Chromium under a real X server (`dev/harness.sh`):
   to click. `F` opens in a new tab, `;y` yanks the link. Verified: labels render
   over the right elements, `HNT` chip shown.
 - **Command palette** — `:` with fuzzy matching over commands, and separate
-  palettes for history, bookmarks, tabs and search engines. Verified: `ope` lists
-  `open`, `open-tab`, `tab-undo`, `private`, `external`.
-- **Tabs** — `t`, `d`, `gt`/`gT`, `g1`/`g9`, `u` (reopen closed). Verified:
+  palettes for history, bookmarks, tabs and search engines; `Up`/`Down` (or
+  `C-p`/`C-n`) walk the list, `Enter` takes the selection. Verified: `ope` lists
+  `open`, `open-tab`, `tab-undo`, `private`, `external`, and the list is filled
+  on pages with child frames too.
+- **Tabs** — `t`, `x`, `X` (reopen closed), `gt`/`gT`, `g1`/`g9`. Verified:
   creating, switching and closing change the model correctly, and a new tab is
   an app window with no Chromium chrome.
 - **Window chrome** — no title bar, no tab strip, no toolbar. Verified under
@@ -294,13 +296,14 @@ Defaults, all remappable. `?` shows the live list.
 | Key | Action |
 | --- | --- |
 | `j` `k` `h` `l` | scroll down/up/left/right |
+| `d` / `u` | page down/up |
 | `Space` / `Backspace` | page down/up |
 | `C-d` / `C-u` | half page |
 | `gg` / `G` | top / bottom |
 | `H` / `L` | back / forward |
 | `r` / `R` | reload / hard reload |
 | `o` / `O` / `go` | open / open new tab / edit current URL |
-| `t` / `d` / `gt` / `gT` / `u` | new / close / next / prev / reopen window |
+| `t` / `x` / `X` / `gt` / `gT` | new / close / reopen / next / prev window |
 | `f` / `F` / `;y` | hint click / hint new tab / hint yank |
 | `:` | command palette (`:extensions` lists loaded addons) |
 | `/` `n` `N` | find, next, previous |
