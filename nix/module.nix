@@ -6,7 +6,11 @@ let
 
   defaultPackage =
     if cfg.package != null then cfg.package
-    else if (builtins.hasAttr "kite" pkgs) then pkgs.kite
+    else if (builtins.hasAttr "kite" pkgs) then
+    # Rebuild the package around the chosen engine; the wrapper pins
+    # KITE_ENGINE to it, which is the only reliable way to pick between two
+    # Chromium builds that both install as `bin/chromium`.
+      pkgs.kite.override { engine = enginePackage; }
     else throw "programs.kite: set `programs.kite.package` (the flake module does this for you) or add the kite overlay";
 
   enginePackage =
@@ -26,10 +30,11 @@ in
 
     engine = lib.mkOption {
       type = lib.types.enum [ "chromium" "ungoogled" "chrome" ];
-      default = "chromium";
+      default = "ungoogled";
       description = ''
         Which Chromium build to use as the engine. kite does not link against
-        it: the binary is resolved at runtime.
+        it: the binary is resolved at runtime, and this option decides what the
+        wrapper points at.
       '';
     };
 
@@ -60,7 +65,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [ defaultPackage enginePackage ] ++ lib.optional (cfg.engine != "chromium") pkgs.chromium;
+    environment.systemPackages = [ defaultPackage enginePackage ];
 
     environment.etc."xdg/kite/config.toml" = lib.mkIf (cfg.settings != { }) {
       source = toml.generate "kite-config.toml" cfg.settings;

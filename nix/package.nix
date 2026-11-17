@@ -1,5 +1,21 @@
-{ lib, rustPlatform, makeWrapper, chromium, xclip, wl-clipboard, xdotool, xprop, installShellFiles }:
+{ lib
+, rustPlatform
+, makeWrapper
+, ungoogled-chromium
+, xclip
+, wl-clipboard
+, xdotool
+, xprop
+, installShellFiles
+, engine ? null
+}:
 
+let
+  # ungoogled-chromium by default: same engine, no Google services, and it
+  # passes kite's whole smoke suite (see the README). Override with
+  # `pkgs.kite.override { engine = pkgs.chromium; }`.
+  enginePackage = if engine != null then engine else ungoogled-chromium;
+in
 rustPlatform.buildRustPackage {
   pname = "kite";
   version = "0.1.0";
@@ -8,7 +24,7 @@ rustPlatform.buildRustPackage {
     src = ../.;
     filter = path: type:
       let base = baseNameOf path; in
-      !(builtins.elem base [ "target" "result" "flake.lock" ".git" "docs" ]);
+        !(builtins.elem base [ "target" "result" "flake.lock" ".git" "docs" ]);
   };
 
   cargoLock.lockFile = ../Cargo.lock;
@@ -16,12 +32,15 @@ rustPlatform.buildRustPackage {
 
   nativeBuildInputs = [ makeWrapper installShellFiles ];
 
-  # Chromium, the clipboard helpers and the X11 frame tools are runtime deps:
+  # The engine, the clipboard helpers and the X11 frame tools are runtime deps:
   # kite talks to the engine as a separate process, so they must be on PATH.
-  # xdotool + xprop are only touched on an X11 session, to drop the WM frame.
+  # `KITE_ENGINE` is pinned to an absolute path because every Nix Chromium build
+  # installs itself as `bin/chromium`, so a PATH lookup cannot tell them apart.
+  # `--set-default` leaves a user's own KITE_ENGINE alone.
   postInstall = ''
     wrapProgram $out/bin/kite \
-      --suffix PATH : ${lib.makeBinPath [ chromium xclip wl-clipboard xdotool xprop ]}
+      --set-default KITE_ENGINE "${lib.getExe enginePackage}" \
+      --suffix PATH : ${lib.makeBinPath [ enginePackage xclip wl-clipboard xdotool xprop ]}
 
     install -Dm644 ${../nix/kite.desktop} $out/share/applications/kite.desktop
     install -Dm644 ${../nix/kite.svg} $out/share/icons/hicolor/scalable/apps/kite.svg
@@ -34,6 +53,9 @@ rustPlatform.buildRustPackage {
       layer, tabs, history, bookmarks and session restore from a ~10 MB Rust
       controller. No Python, no Qt, no Electron: the UI process is native code
       and the page is a stock Chromium renderer.
+
+      The engine defaults to ungoogled-chromium; `programs.kite.engine` (or
+      `pkgs.kite.override { engine = pkgs.chromium; }`) switches back.
     '';
     homepage = "https://github.com/david/kite";
     license = licenses.mit;

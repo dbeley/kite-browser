@@ -21,11 +21,12 @@
         kite = final.callPackage ./nix/package.nix { };
       };
 
-      nixosModules.default = { pkgs, lib, ... }: {
+      nixosModules.default = {
         imports = [ ./nix/module.nix ];
-        # The flake knows where its own package lives; the module stays generic.
-        programs.kite.package = lib.mkDefault
-          self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+        # The flake knows where its own package lives, and the module stays
+        # generic. An overlay (not a pinned `programs.kite.package`) is what lets
+        # `programs.kite.engine` rebuild the package around another engine.
+        nixpkgs.overlays = [ self.overlays.default ];
       };
       nixosModules.kite = self.nixosModules.default;
 
@@ -38,8 +39,10 @@
             rustfmt
             clippy
             pkg-config
-            # runtime + verification tooling
+            # runtime + verification tooling. Both engines: ungoogled-chromium is
+            # what the package ships, chromium is the fallback / A/B baseline.
             chromium
+            ungoogled-chromium
             xvfb
             xdotool
             imagemagick
@@ -50,10 +53,13 @@
             jq
           ];
           RUST_BACKTRACE = "1";
+          # Exercise the shipped default in the harness and in CI.
+          KITE_ENGINE = pkgs.lib.getExe pkgs.ungoogled-chromium;
           shellHook = ''
             echo "kite dev shell"
             echo "  cargo build --release        # build the controller"
             echo "  ./dev/harness.sh             # headless GUI smoke test (Xvfb + i3)"
+            echo "  KITE_ENGINE=$(command -v chromium) ./dev/harness.sh   # A/B on plain chromium"
           '';
         };
       });
