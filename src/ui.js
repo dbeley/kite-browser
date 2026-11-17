@@ -511,7 +511,9 @@
         ? ((e.shiftKey || k === k.toUpperCase()) ? k.toUpperCase() : k.toLowerCase())
         : k;
     } else return null;
-    if (mods) return '<' + mods + body + '>';
+    // Named keys keep their angle brackets so they match the config spelling
+    // ("<Down>", "<Space>"); a plain character stays bare.
+    if (named || mods) return '<' + mods + body + '>';
     return body;
   }
 
