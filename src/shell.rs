@@ -42,6 +42,10 @@ pub struct Tab {
     /// Execution context of the shell's isolated world in this document.
     /// `None` until the world exists, or after a navigation destroyed it.
     pub world: Option<i64>,
+    /// Id of the tab's top frame. The UI script is injected into every frame,
+    /// so child frames get `kite` worlds of their own; only a context that
+    /// belongs to this frame is the UI.
+    pub frame: String,
     pub url: String,
     pub title: String,
     pub loading: bool,
@@ -109,6 +113,7 @@ impl Shell {
             id: page,
             session,
             world: None,
+            frame: String::new(),
             url,
             title: String::new(),
             loading: true,
@@ -212,16 +217,11 @@ impl Shell {
         Ok(())
     }
 
-    /// Create the `kite` world for the tab's *current* document and remember
-    /// its context id.
-    ///
-    /// Worlds are per document and `addScriptToEvaluateOnNewDocument` only
-    /// runs in one that already exists, so every navigation needs a fresh
-    /// `createIsolatedWorld`. Idempotent: Chromium hands back the same context
-    /// if the world is already there.
-    fn ensure_world(&mut self, idx: usize) {
-        if self.tabs[idx].world.is_some() {
-            return;
+    /// The id of the tab's top frame, cached once known. A target keeps the
+    /// same top frame for its whole life; only the document inside it changes.
+    fn main_frame(&mut self, idx: usize) -> Option<String> {
+        if !self.tabs[idx].frame.is_empty() {
+            return Some(self.tabs[idx].frame.clone());
         }
         let session = self.tabs[idx].session.clone();
         let frame = self
@@ -235,8 +235,27 @@ impl Shell {
             })
             .unwrap_or_default();
         if frame.is_empty() {
+            return None;
+        }
+        self.tabs[idx].frame = frame.clone();
+        Some(frame)
+    }
+
+    /// Create the `kite` world for the tab's *current* document and remember
+    /// its context id.
+    ///
+    /// Worlds are per document and `addScriptToEvaluateOnNewDocument` only
+    /// runs in one that already exists, so every navigation needs a fresh
+    /// `createIsolatedWorld`. Idempotent: Chromium hands back the same context
+    /// if the world is already there.
+    fn ensure_world(&mut self, idx: usize) {
+        if self.tabs[idx].world.is_some() {
             return;
         }
+        let session = self.tabs[idx].session.clone();
+        let Some(frame) = self.main_frame(idx) else {
+            return;
+        };
         if let Ok(w) = self.cdp.call(
             Some(&session),
             "Page.createIsolatedWorld",
@@ -434,6 +453,7 @@ impl Shell {
                     id,
                     session,
                     world: None,
+                    frame: String::new(),
                     url: if blank { "about:blank".to_string() } else { u },
                     title: String::new(),
                     loading: true,
@@ -513,6 +533,7 @@ impl Shell {
             id: target_id,
             session,
             world: None,
+            frame: String::new(),
             url: if blank { "about:blank".to_string() } else { u },
             title: String::new(),
             loading: true,
@@ -723,6 +744,9 @@ impl Shell {
                     if let Some(idx) = self.tab_by_session(&ev.session) {
                         self.tabs[idx].url = url;
                         self.tabs[idx].loading = true;
+                        if let Some(id) = ev.params.pointer("/frame/id").and_then(|v| v.as_str()) {
+                            self.tabs[idx].frame = id.to_string();
+                        }
                         // New document, new world: the context id from the old
                         // one is dead, so drop it and rebuild before anything
                         // in the shell tries to evaluate.
@@ -795,8 +819,20 @@ impl Shell {
             "Runtime.executionContextCreated" => {
                 let ctx = &ev.params["context"];
                 if ctx.get("name").and_then(|v| v.as_str()) == Some("kite") {
+                    let frame = ctx
+                        .pointer("/auxData/frameId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
                     if let Some(idx) = self.tab_by_session(&ev.session) {
-                        self.tabs[idx].world = ctx.get("id").and_then(|v| v.as_i64());
+                        // The UI script is injected into every frame, so a
+                        // frame with an ad in it hands us its own `kite` world
+                        // too. Adopting that id would aim every reply at the
+                        // iframe — the palette would open and never fill.
+                        let main = self.main_frame(idx);
+                        if main.as_deref() == Some(frame.as_str()) {
+                            self.tabs[idx].world = ctx.get("id").and_then(|v| v.as_i64());
+                        }
                     }
                 }
             }
@@ -848,6 +884,14 @@ impl Shell {
 
     fn reply(&mut self, session: Option<String>, rid: Value, body: Value) {
         let Some(s) = session else { return };
+        // Never drop a reply on the floor: when the world id is missing (the
+        // document changed under us) rebuild it before answering, or the
+        // palette would sit empty with no error anywhere.
+        if let Some(idx) = self.tab_by_session(&Some(s.clone())) {
+            if self.tabs[idx].world.is_none() {
+                self.ensure_world(idx);
+            }
+        }
         let expr = format!(
             "(()=>{{try{{window.__kite&&window.__kite.recv({}, {})}}catch(e){{}}}})()",
             rid, body
