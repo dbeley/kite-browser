@@ -18,7 +18,7 @@ toolbar, and no window frame.
 
 | | qutebrowser | kite |
 | --- | --- | --- |
-| Engine | QtWebEngine (Chromium, embedded) | system Chromium, separate process |
+| Engine | QtWebEngine (Chromium, embedded) | ungoogled-chromium or chromium, separate process |
 | Shell | Python + Qt | Rust, one 857 KB binary |
 | Keys | Qt event → Python command registry | Chromium key path → one JS handler |
 | UI | Qt widgets | shadow-DOM overlay: one bottom status line |
@@ -249,8 +249,46 @@ nix run .                     # from a checkout
 nix profile install .#kite
 ```
 
-The package wraps `kite` with Chromium and the clipboard helpers on `PATH`, so
+The package wraps `kite` with its engine and the clipboard helpers on `PATH`, so
 the engine needs no configuration.
+
+### Which engine
+
+kite resolves the binary at runtime, in this order: `$KITE_ENGINE`, then
+`ungoogled-chromium`, `chromium`, `chromium-browser`, `google-chrome`,
+`google-chrome-stable`. `general.engine` in the config (or `--engine`) takes a
+name or a path and skips the search. The Nix package pins `KITE_ENGINE` to an
+absolute path, because every Nix Chromium build installs itself as
+`bin/chromium` — a PATH lookup cannot tell the two apart.
+
+The default is **ungoogled-chromium**: the same engine with Google's services
+patched out. Both builds (157.0.8103) were run through the whole suite and came
+out identical: app mode and window size, WM_CLASS `Chromium-browser` (so the X11
+frame stripping and `dev/harness.sh` are unchanged), the injected UI layer,
+keymap, hints, scroll, palette, `--load-extension` (a uBOL MV3 service worker
+really runs), `:extensions`, and extension pages as windows. Cold start was the
+same or slightly better: engine ready 136–147 ms vs 150–219 ms, first paint
+80–113 ms vs 88–143 ms (n=3 each, Xvfb, no GPU).
+
+What it costs — none of it in kite's code:
+
+- **No Google API keys.** Geolocation ("find my position") and Google Translate
+  do not work. `perf_args` already disables Translate, so geolocation is the
+  real loss.
+- **WebRTC discovery is patched out** (`enable_mdns=false`,
+  `enable_service_discovery=false`, no Hangouts/remoting): video calls need a
+  test, and if they degrade that is the engine's decision, not a kite bug.
+- **Version lag.** ungoogled-chromium is Chromium plus a rebased patch set, so
+  nixpkgs' copy can sit a few point releases behind chromium depending on the
+  revision (I measured 157.0.8103.50 against .78), and security patches therefore
+  land later. Check `nix eval nixpkgs#ungoogled-chromium.version` when you bump;
+  the module exists so this is a one-word switch.
+- **DRM** needs `pkgs.ungoogled-chromium-wv` (or `chromium-wv`), as with plain
+  chromium: neither Nix build bundles Widevine, and kite disables the component
+  updater that would download it.
+
+Pin another engine with `programs.kite.engine = "chromium"`, or
+`pkgs.kite.override { engine = pkgs.chromium; }` outside NixOS.
 
 ### NixOS module
 
@@ -265,7 +303,7 @@ the engine needs no configuration.
   programs.kite = {
     enable = true;
     defaultBrowser = true;          # handle http/https links
-    engine = "chromium";            # chromium | ungoogled | chrome
+    engine = "ungoogled";           # ungoogled (default) | chromium | chrome
     settings = {
       general.search_engine = "wikipedia";
       general.hints_chars = "jkl;asdf";
@@ -286,7 +324,8 @@ cargo build --release
 ./target/release/kite https://example.com
 ```
 
-Requires a Chromium binary on `PATH` (or `--engine /path/to/chromium`). If user
+Requires a Chromium binary on `PATH` — `ungoogled-chromium`, `chromium`,
+`chromium-browser` or Chrome — or `--engine /path/to/chromium`. If user
 namespaces are unavailable (containers, some CI), set `KITE_NO_SANDBOX=1`.
 
 ## Keys

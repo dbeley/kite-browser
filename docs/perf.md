@@ -51,6 +51,13 @@ ARM images `/dev/shm` is 64 MB, and renderers crash with it full.
 **Chrome we replace.** `--disable-pinch`, `--overscroll-history-navigation=0`,
 `--hide-scrollbars`, `--noerrdialogs`, `--disable-infobars`.
 
+The same set is passed to ungoogled-chromium, which is the shipped default. Two
+notes: feature names that build has patched away (`Translate`,
+`PrivacySandboxSettings4`, `ChromeWhatsNewUI`, …) are silently ignored, so
+`--disable-features` needs no per-engine list; and the numbers below hold for
+both — ungoogled measured the same or marginally faster, because the services
+these flags disable are the ones it does not ship.
+
 Do **not** add `--disable-gpu` on a machine with any GPU: on several builds it
 leaves the page unpainted under software compositing. `KITE_DISABLE_GPU=1` exists
 for genuinely GPU-less environments, and it is off by default for that reason
