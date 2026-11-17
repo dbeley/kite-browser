@@ -102,6 +102,10 @@ unset WAYLAND_DISPLAY WAYLAND_SOCKET
 export KITE_HOME="$STATE"
 export XDG_CONFIG_HOME="$STATE/xdg-config"
 export KITE_NO_SANDBOX=1
+# Which engine to drive. The dev shell exports the shipped default
+# (ungoogled-chromium); pin plain chromium for an A/B:
+#   KITE_ENGINE=$(command -v chromium) ./dev/harness.sh
+export KITE_ENGINE="${KITE_ENGINE:-$(command -v chromium)}"
 export KITE_DISABLE_GPU="${KITE_DISABLE_GPU:-}"
 export KITE_ENGINE_LOG="${KITE_ENGINE_LOG:-}"
 

@@ -29,6 +29,8 @@ export DISPLAY="$DISP"
 # which would put the window on the real desktop instead of Xvfb.
 unset WAYLAND_DISPLAY WAYLAND_SOCKET
 export KITE_NO_SANDBOX=1
+# Same engine selection as the harness: devShell exports ungoogled-chromium.
+export KITE_ENGINE="${KITE_ENGINE:-$(command -v chromium)}"
 # Only ever matches the throwaway bench profile, never the invoking shell.
 export BENCH_KILLPAT="/tmp/kite-bench/st/engine-profile"
 
