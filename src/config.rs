@@ -7,7 +7,9 @@ use serde_json::{json, Map, Value};
 pub const DEFAULT_CONFIG: &str = r#"
 # kite — keyboard-first Chromium shell
 [general]
-engine = "chromium"
+# auto: ungoogled-chromium, then chromium, then the usual Chrome names.
+# Set it to a name or a path to pin one engine.
+engine = "auto"
 start_page = "home"
 # allow confirm()/prompt() dialogs: block | allow
 dialogs = "block"

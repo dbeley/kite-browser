@@ -67,6 +67,37 @@ fn which(bin: &str) -> Option<PathBuf> {
     None
 }
 
+/// What `engine = "auto"` looks for, best first. ungoogled-chromium is the same
+/// engine without Google's services, so it is preferred when a distro ships it
+/// under its own name. Nix builds call every one of them `bin/chromium`, which
+/// is why the packaged kite pins `KITE_ENGINE` to an absolute path instead of
+/// relying on this list.
+pub const AUTO_CANDIDATES: [&str; 5] = [
+    "ungoogled-chromium",
+    "chromium",
+    "chromium-browser",
+    "google-chrome",
+    "google-chrome-stable",
+];
+
+/// `auto` / empty: `$KITE_ENGINE`, then [`AUTO_CANDIDATES`]. Anything else is
+/// taken literally: a path, or a name looked up on `PATH`.
+pub fn resolve(spec: &str) -> Option<PathBuf> {
+    let spec = spec.trim();
+    if !spec.is_empty() && spec != "auto" {
+        return which(spec);
+    }
+    if let Ok(v) = std::env::var("KITE_ENGINE") {
+        let v = v.trim();
+        if !v.is_empty() && v != "auto" {
+            if let Some(p) = which(v) {
+                return Some(p);
+            }
+        }
+    }
+    AUTO_CANDIDATES.iter().find_map(|c| which(c))
+}
+
 fn free_port() -> u16 {
     std::net::TcpListener::bind(("127.0.0.1", 0))
         .and_then(|l| l.local_addr())
@@ -231,8 +262,13 @@ fn with_port(url: &str, port: u16) -> String {
 
 impl Engine {
     pub fn launch(opts: &EngineOptions) -> Result<Engine, String> {
-        let bin = which(&opts.binary)
-            .ok_or_else(|| format!("engine binary not found: {}", opts.binary))?;
+        let bin = resolve(&opts.binary).ok_or_else(|| match opts.binary.trim() {
+            "" | "auto" => format!(
+                "no engine found: looked for {} (set KITE_ENGINE or pass --engine)",
+                AUTO_CANDIDATES.join(", ")
+            ),
+            spec => format!("engine binary not found: {spec}"),
+        })?;
         std::fs::create_dir_all(&opts.profile)
             .map_err(|e| format!("profile dir {}: {e}", opts.profile.display()))?;
         clear_stale_locks(&opts.profile);
@@ -419,5 +455,24 @@ mod tests {
     fn no_extensions_means_no_flags() {
         assert!(extension_args(&[]).is_empty());
         assert!(extension_args(&["".into(), "  ".into()]).is_empty());
+    }
+
+    #[test]
+    fn engine_spec_is_a_path_or_a_name() {
+        assert_eq!(
+            resolve("/bin/sh").unwrap(),
+            PathBuf::from("/bin/sh"),
+            "an absolute path is taken literally"
+        );
+        assert!(resolve("/nope/not-a-browser").is_none());
+        assert!(resolve("kite-no-such-browser-2f8c").is_none());
+    }
+
+    #[test]
+    fn auto_candidates_put_ungoogled_first() {
+        assert_eq!(AUTO_CANDIDATES[0], "ungoogled-chromium");
+        assert!(AUTO_CANDIDATES.contains(&"chromium"));
+        // `auto` must never panic, whether or not this host has an engine.
+        let _ = resolve("auto");
     }
 }

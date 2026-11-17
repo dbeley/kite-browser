@@ -49,7 +49,7 @@ usage: kite [options] [url]
 options:
   -c, --config PATH    config file (default $XDG_CONFIG_HOME/kite/config.toml)
       --state DIR      state dir for history/bookmarks/session/profile
-      --engine BIN     chromium binary (default: auto-detect)
+      --engine BIN     engine binary: path, name, or auto (default: auto)
       --port N         fixed DevTools port (default: random)
       --width N        window width
       --height N       window height
@@ -201,7 +201,7 @@ fn main() {
             .engine_bin
             .clone()
             .or_else(|| cfg.get_str("engine").map(str::to_string))
-            .unwrap_or_else(|| "chromium".to_string()),
+            .unwrap_or_else(|| "auto".to_string()),
         profile,
         url: boot_url.clone(),
         port: args.port,
@@ -226,7 +226,9 @@ fn main() {
         Ok(e) => e,
         Err(e) => {
             eprintln!("kite: {e}");
-            eprintln!("kite: install chromium, or pass --engine /path/to/chromium");
+            eprintln!(
+                "kite: install chromium or ungoogled-chromium, or pass --engine /path/to/chromium"
+            );
             std::process::exit(1);
         }
     };
