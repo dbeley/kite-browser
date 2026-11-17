@@ -810,16 +810,19 @@
     S.cmd.sel = 0;
     clearTimeout(S.cmd.timer);
     const my = ++S.cmd.req;
+    if (S.cmd.kind === 'find') {
+      // Find has no candidates to list; skip the round trip entirely.
+      S.cmd.items = [];
+      paletteRender();
+      return;
+    }
     S.cmd.timer = setTimeout(() => {
-      const kind = S.cmd.kind === 'open' || S.cmd.kind === 'find' ? 'open' : S.cmd.kind;
-      send('complete', { kind: S.cmd.kind === 'open' ? 'open' : kind, query: pinput.value, limit: 14 })
-        .then((res) => {
-          if (!S.cmd || !S.cmd.open || my !== S.cmd.req) return;
-          S.cmd.items = (res && res.items) || [];
-          if (S.cmd.kind === 'find') S.cmd.items = [];
-          paletteRender();
-        });
-      if (S.cmd.kind === 'find') paletteRender();
+      const kind = S.cmd.kind === 'open' ? 'open' : S.cmd.kind;
+      send('complete', { kind, query: pinput.value, limit: 14 }).then((res) => {
+        if (!S.cmd || !S.cmd.open || my !== S.cmd.req) return;
+        S.cmd.items = (res && res.items) || [];
+        paletteRender();
+      });
     }, 45);
   }
 
@@ -838,7 +841,9 @@
         '<span class="d">' + esc(it.detail || '') + '</span></div>';
     });
     plist.innerHTML = h;
-    pmeta.textContent = items.length ? (S.cmd.sel + 1) + '/' + items.length : '';
+    pmeta.textContent = items.length
+      ? (items.length > 1 ? '↑↓ ' : '') + (S.cmd.sel + 1) + '/' + items.length
+      : '';
     const sel = plist.querySelector('.it.sel');
     if (sel) sel.scrollIntoView({ block: 'nearest' });
   }
