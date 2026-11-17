@@ -64,6 +64,13 @@ cat > "$SRV/two.html" <<'HTML'
 <!doctype html><meta charset="utf-8"><title>page two</title>
 <body style="font:17px/1.6 system-ui;padding:48px"><h1>Page two</h1><p>Second target. <a href="/index.html">back to index</a></p></body>
 HTML
+# A framed page: child frames get `kite` worlds of their own, which once stole
+# the tab's context id and left the palette silently empty.
+cat > "$SRV/framed.html" <<'HTML'
+<!doctype html><meta charset="utf-8"><title>page with a frame</title>
+<body style="font:17px/1.6 system-ui;padding:48px"><h1>Page with a frame</h1>
+<iframe src="/one.html" width="420" height="160"></iframe></body>
+HTML
 
 # ------------------------------------------------------------------- servers
 mkdir -p "$STATE/i3"
@@ -138,6 +145,11 @@ case "${KITE_SCENARIO:-basic}" in
     ;;
   palette)
     keys colon; type_in "ope"; shot 01-palette
+    ;;
+  palette-framed)
+    # The omnibox must fill in even when the page has a child frame.
+    keys o; type_in "127.0.0.1:8808/framed.html"; keys Return; sleep 3
+    keys o; type_in "one"; shot 01-palette-framed
     ;;
   help)
     keys question; shot 01-help
