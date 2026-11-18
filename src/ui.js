@@ -911,7 +911,9 @@
       return;
     }
     // open / bookmark / history
-    let target = raw;
+    // Completion rows carry the URL the shell will actually navigate to, so
+    // "lemonde.fr" no longer previews as a DDG search and then opens the site.
+    let target = (picked && picked.url) ? picked.url : raw;
     if (picked && (picked.kind === 'bookmark' || picked.kind === 'history' || picked.kind === 'tab' || picked.kind === 'ext')) {
       target = picked.detail || picked.text;
       if (picked.kind === 'tab' && typeof picked.index === 'number') {

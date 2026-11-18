@@ -1283,12 +1283,33 @@ impl Shell {
                     out.push(json!({ "text": t, "detail": h.url, "kind": "history" }));
                 }
                 if !q.is_empty() {
-                    let engine = self.cfg.get_str("search_engine").unwrap_or("ddg");
-                    out.push(json!({
-                        "text": format!("{engine}: {q}"),
-                        "detail": "search",
-                        "kind": "search",
-                    }));
+                    let t = interpret_input(&self.cfg, &q, &self.home);
+                    out.push(match t.kind {
+                        InputKind::Home => json!({
+                            "text": "home",
+                            "detail": t.url,
+                            "kind": "url",
+                            "url": t.url,
+                        }),
+                        InputKind::Url => json!({
+                            "text": t.url,
+                            "detail": "open",
+                            "kind": "url",
+                            "url": t.url,
+                        }),
+                        InputKind::Engine => json!({
+                            "text": format!("{}: {}", t.engine, t.query),
+                            "detail": t.url,
+                            "kind": "engine",
+                            "url": t.url,
+                        }),
+                        InputKind::Search => json!({
+                            "text": format!("{}: {}", t.engine, t.query),
+                            "detail": t.url,
+                            "kind": "search",
+                            "url": t.url,
+                        }),
+                    });
                 }
             }
         }
@@ -1297,23 +1318,96 @@ impl Shell {
     }
 }
 
-/// Shared by the shell and by startup, so a scheme-less `start_page` or CLI
-/// argument is normalised once and the engine's `--app=` window is never
-/// opened on a URL Chromium would reject.
-pub fn resolve_input(cfg: &Config, input: &str, home: &str) -> String {
+/// What the omnibox decided to do with an input. The palette uses the same
+/// classification as navigation, so the row it shows is what Enter does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputKind {
+    Home,
+    Url,
+    Search,
+    Engine,
+}
+
+pub struct InputTarget {
+    pub kind: InputKind,
+    pub url: String,
+    /// Engine name for `Search` (the configured default) and `Engine` (the
+    /// typed prefix); empty otherwise.
+    pub engine: String,
+    /// The query for `Search`, or the text after an engine prefix.
+    pub query: String,
+}
+
+fn search_url(cfg: &Config, engine_name: &str, query: &str) -> String {
+    let engine = cfg
+        .search
+        .get(engine_name)
+        .and_then(|v| v.as_str())
+        .unwrap_or("https://duckduckgo.com/?q={}");
+    engine.replace("{}", &urlencode(query))
+}
+
+/// A scheme-less input is a host only when it has a plausible hostname: a dot
+/// followed by an alphabetic TLD, a port, or an IPv4 literal. This keeps
+/// `lemonde.fr` a URL while `3.14` and `foo:bar` stay searches.
+fn looks_like_host(s: &str) -> bool {
+    if s.is_empty() || s.chars().any(char::is_whitespace) || s.ends_with('.') {
+        return false;
+    }
+    let authority = s.split(['/', '?', '#']).next().unwrap_or(s);
+    let (host, had_port) = match authority.rsplit_once(':') {
+        Some((host, port)) => {
+            if host.is_empty() || port.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
+                return false;
+            }
+            (host, true)
+        }
+        None => (authority, false),
+    };
+    if host.is_empty() {
+        return false;
+    }
+    if host.parse::<std::net::Ipv4Addr>().is_ok() {
+        return true;
+    }
+    if !host
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+    {
+        return false;
+    }
+    // An explicit port makes an intranet name (`buildbox:8080`) a host even
+    // without a dot.
+    if had_port {
+        return true;
+    }
+    let Some((name, tld)) = host.rsplit_once('.') else {
+        return false;
+    };
+    !name.is_empty() && tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+/// The single interpretation shared by navigation and the omnibox preview.
+fn interpret_input(cfg: &Config, input: &str, home: &str) -> InputTarget {
     let s = input.trim();
+    let home_target = || InputTarget {
+        kind: InputKind::Home,
+        url: home.to_string(),
+        engine: String::new(),
+        query: String::new(),
+    };
     if s == "home" || s == "kite:home" {
-        return home.to_string();
+        return home_target();
     }
     if s.is_empty() {
         let start = cfg.get_str("start_page").map(str::trim).unwrap_or("home");
         if start.is_empty() || matches!(start, "home" | "kite" | "kite:home" | "about:blank") {
-            return home.to_string();
+            return home_target();
         }
-        return resolve_input(cfg, start, home);
+        return interpret_input(cfg, start, home);
     }
     if s.starts_with("javascript:") {
-        return home.to_string();
+        return home_target();
     }
     let has_scheme = s.contains("://")
         || s.starts_with("about:")
@@ -1321,27 +1415,53 @@ pub fn resolve_input(cfg: &Config, input: &str, home: &str) -> String {
         || s.starts_with("data:")
         || s.starts_with("view-source:");
     if has_scheme {
-        return s.to_string();
+        return InputTarget {
+            kind: InputKind::Url,
+            url: s.to_string(),
+            engine: String::new(),
+            query: s.to_string(),
+        };
     }
     if s.starts_with("localhost") || s.starts_with("127.0.0.1") || s.starts_with("[::1]") {
-        return format!("http://{s}");
+        return InputTarget {
+            kind: InputKind::Url,
+            url: format!("http://{s}"),
+            engine: String::new(),
+            query: s.to_string(),
+        };
     }
     if let Some((head, rest)) = s.split_once(' ') {
-        if let Some(engine) = cfg.search.get(head).and_then(|v| v.as_str()) {
-            return engine.replace("{}", &urlencode(rest));
+        if cfg.search.get(head).and_then(|v| v.as_str()).is_some() {
+            return InputTarget {
+                kind: InputKind::Engine,
+                url: search_url(cfg, head, rest),
+                engine: head.to_string(),
+                query: rest.to_string(),
+            };
         }
     }
-    let hostish = !s.contains(' ') && (s.contains('.') || s.contains(':')) && !s.ends_with('.');
-    if hostish {
-        return format!("https://{s}");
+    if looks_like_host(s) {
+        return InputTarget {
+            kind: InputKind::Url,
+            url: format!("https://{s}"),
+            engine: String::new(),
+            query: s.to_string(),
+        };
     }
-    let engine_name = cfg.get_str("search_engine").unwrap_or("ddg");
-    let engine = cfg
-        .search
-        .get(engine_name)
-        .and_then(|v| v.as_str())
-        .unwrap_or("https://duckduckgo.com/?q={}");
-    engine.replace("{}", &urlencode(s))
+    let engine = cfg.get_str("search_engine").unwrap_or("ddg").to_string();
+    InputTarget {
+        kind: InputKind::Search,
+        url: search_url(cfg, &engine, s),
+        engine,
+        query: s.to_string(),
+    }
+}
+
+/// Shared by the shell and by startup, so a scheme-less `start_page` or CLI
+/// argument is normalised once and the engine's `--app=` window is never
+/// opened on a URL Chromium would reject.
+pub fn resolve_input(cfg: &Config, input: &str, home: &str) -> String {
+    interpret_input(cfg, input, home).url
 }
 
 fn read_manifest(dir: &Path) -> Option<Value> {
@@ -1555,6 +1675,25 @@ mod tests {
             resolve_input(&c, "example.com", home),
             "https://example.com"
         );
+        assert_eq!(resolve_input(&c, "lemonde.fr", home), "https://lemonde.fr");
+        assert_eq!(
+            resolve_input(&c, "example.com:8080/a?b", home),
+            "https://example.com:8080/a?b"
+        );
+        assert_eq!(
+            resolve_input(&c, "buildbox:8080", home),
+            "https://buildbox:8080"
+        );
+        assert_eq!(
+            resolve_input(&c, "3.14", home),
+            "https://duckduckgo.com/?q=3.14",
+            "a numeric dotted string is not a hostname"
+        );
+        assert_eq!(
+            resolve_input(&c, "foo:bar", home),
+            "https://duckduckgo.com/?q=foo%3Abar",
+            "a non-numeric port is not a hostname"
+        );
         assert_eq!(
             resolve_input(&c, "https://example.com", home),
             "https://example.com"
@@ -1568,6 +1707,36 @@ mod tests {
         assert!(
             resolve_input(&c, "two words", home).starts_with("https://duckduckgo.com/?q=two+words")
         );
+    }
+
+    #[test]
+    fn omnibox_preview_matches_navigation() {
+        let c = cfg();
+        let home = "file:///tmp/home.html";
+        for q in [
+            "lemonde.fr",
+            "example.com:8080/a?b",
+            "ddg two words",
+            "wikipedia rust",
+            "two words",
+            "3.14",
+            "foo:bar",
+            "home",
+            "javascript:alert(1)",
+        ] {
+            let t = interpret_input(&c, q, home);
+            assert_eq!(t.url, resolve_input(&c, q, home), "input: {q}");
+        }
+        let t = interpret_input(&c, "lemonde.fr", home);
+        assert_eq!(t.kind, InputKind::Url);
+        assert_eq!(t.url, "https://lemonde.fr");
+        let t = interpret_input(&c, "ddg two words", home);
+        assert_eq!(t.kind, InputKind::Engine);
+        assert_eq!(t.engine, "ddg");
+        assert_eq!(t.query, "two words");
+        let t = interpret_input(&c, "two words", home);
+        assert_eq!(t.kind, InputKind::Search);
+        assert_eq!(t.engine, "ddg");
     }
 
     #[test]
