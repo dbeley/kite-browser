@@ -1019,6 +1019,16 @@ impl Shell {
                 let limit = arg_u("limit").unwrap_or(12);
                 if kind == "ext" {
                     self.ext_cache = self.discover_extensions();
+                    if self.ext_cache.is_empty() {
+                        // An empty list otherwise looks like "extensions are
+                        // broken"; the common case is that none are configured.
+                        let msg = if self.cfg.extensions().is_empty() {
+                            "no extensions configured: set general.extensions"
+                        } else {
+                            "no loaded extensions detected"
+                        };
+                        self.toast(msg);
+                    }
                 }
                 let items = self.completions(&kind, &q, limit);
                 self.reply(session, rid, json!({ "items": items }));
@@ -1470,16 +1480,14 @@ fn read_manifest(dir: &Path) -> Option<Value> {
 }
 
 fn background_path(m: &Value) -> String {
-    if let Some(sw) = m
+    let path = m
         .pointer("/background/service_worker")
+        .or_else(|| m.pointer("/background/page"))
         .and_then(|v| v.as_str())
-    {
-        return sw.to_string();
-    }
-    m.pointer("/background/page")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string()
+        .unwrap_or("");
+    // Manifests may write `/js/background.js`, while target URLs never carry
+    // the leading slash. Normalise so the first-run id lookup can match.
+    path.trim_start_matches('/').to_string()
 }
 
 /// Two spellings of the same directory compare equal (`~`, symlinks, a
@@ -1760,6 +1768,10 @@ mod tests {
         assert_eq!(ext_name(&dir, &m), "Localised Name");
         assert_eq!(ext_page(&dir, &m), "popups/popup.html");
         assert_eq!(background_path(&m), "bg.js");
+        let slashed: Value =
+            serde_json::from_str(r#"{"background":{"service_worker":"/js/background.js"}}"#)
+                .unwrap();
+        assert_eq!(background_path(&slashed), "js/background.js");
 
         // A popup the package does not ship is not offered.
         let empty = dir.join("empty");

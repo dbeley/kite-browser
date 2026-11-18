@@ -227,7 +227,15 @@ id (a hash of its directory). Add kite's id to `allowed_origins`:
 ```sh
 # the id is in the :extensions palette (also in
 # <state>/engine-profile/Default/Preferences, extensions.settings)
-HOST=~/.config/chromium/NativeMessagingHosts/org.keepassxc.keepassxc_browser.json
+#
+# kite passes --user-data-dir=<state>/engine-profile, and Chromium looks for
+# per-user native-messaging manifests in $DIR_USER_DATA/NativeMessagingHosts,
+# so it is *not* ~/.config/chromium. `--state DIR` changes <state>.
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/kite"
+HOST="$STATE/engine-profile/NativeMessagingHosts/org.keepassxc.keepassxc_browser.json"
+mkdir -p "$(dirname "$HOST")"
+# If KeePassXC only wrote a manifest for the default Chromium profile, copy it
+# in first: cp ~/.config/chromium/NativeMessagingHosts/org.keepassxc.keepassxc_browser.json "$HOST"
 python3 -c 'import json,sys;p=sys.argv[1];d=json.load(open(p));d["allowed_origins"].append("chrome-extension://"+sys.argv[2]+"/");json.dump(d,open(p,"w"),indent=4)' \
   "$HOST" <id-from-kite>
 ```
