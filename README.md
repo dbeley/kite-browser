@@ -349,7 +349,7 @@ Defaults, all remappable. `?` shows the live list.
 | `gg` / `G` | top / bottom |
 | `H` / `L` | back / forward |
 | `r` / `R` | reload / hard reload |
-| `o` / `O` / `go` | open / open new tab / edit current URL |
+| `o` / `O` / `go` | open / open in a new window / edit current URL |
 | `t` / `x` / `X` / `gt` / `gT` | new / close / reopen / next / prev window |
 | `f` / `F` / `;y` | hint click / hint new tab / hint yank |
 | `:` | command palette (`:extensions` lists loaded addons) |
@@ -361,6 +361,11 @@ Defaults, all remappable. `?` shows the live list.
 | `i` `Esc` | insert mode / back to normal |
 | `v` | passthrough (page gets every key) |
 | `ZQ` `ZZ` | quit |
+
+kite calls these **tabs**, but each one is a separate Chromium `--app=` window:
+`t`, `O`, `F` and `P` open a new window rather than adding a tab to the current
+one. That is deliberate — a real tab would bring back Chromium's tab strip and
+omnibox. `gt`/`gT`/`g1`/`g9` switch between the windows.
 
 ![hint mode](docs/img/hints.png)
 ![command palette](docs/img/palette.png)
