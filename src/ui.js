@@ -150,7 +150,7 @@
     /* hint labels */
     #hints { position: fixed; inset: 0; pointer-events: none; }
     .h {
-      position: absolute; padding: 2px 4px; font-size: 10.5px; font-weight: 700; line-height: 1;
+      position: absolute; padding: 3px 5px; font-size: 13px; font-weight: 700; line-height: 1;
       letter-spacing: .04em; background: #8fbf8f; color: #0b0e11; border: 1px solid #0b0e11;
       text-transform: lowercase;
     }
@@ -672,7 +672,13 @@
     cancelHint();
     const cands = hintCandidates();
     if (!cands.length) { toast('no targets'); return; }
-    const chars = (S.cfg.settings.hints_chars || 'asdfghjkl;').split('');
+    // Letters only: punctuation is hard to tell apart at a glance and clashes
+    // with sequences like `;y`. Filtering (not just changing the default) also
+    // repairs configs written before the default dropped `;`.
+    let chars = String(S.cfg.settings.hints_chars || 'asdfghjkl')
+      .split('').filter((c) => /[a-z]/i.test(c)).map((c) => c.toLowerCase());
+    chars = Array.from(new Set(chars));
+    if (chars.length < 2) chars = 'asdfghjkl'.split('');
     const labs = labels(cands.length, chars);
     hintLayer.innerHTML = '';
     S.hint = { items: [], typed: '', newTab: opts.newTab, yank: opts.yank, chars };
@@ -680,10 +686,11 @@
       const d = document.createElement('div');
       d.className = 'h';
       d.textContent = labs[i];
-      const w = Math.max(12, labs[i].length * 7 + 6);
+      const H = 21; // 13px line + 3px padding ×2 + 1px border ×2
+      const w = Math.max(16, labs[i].length * 9 + 8);
       // Keep labels clear of the chrome, which overlays the bottom strip.
       const h = chromeEl && chromeEl.classList.contains('on') ? chromeEl.offsetHeight : 0;
-      const top = Math.min(c.r.top + Math.min(c.r.height / 2 - 7, 20), window.innerHeight - 16 - h);
+      const top = Math.min(c.r.top + Math.min(c.r.height / 2 - H / 2, 20), window.innerHeight - H - h);
       d.style.left = Math.max(0, Math.min(window.innerWidth - w, c.r.left)) + 'px';
       d.style.top = Math.max(0, top) + 'px';
       hintLayer.appendChild(d);
@@ -1045,7 +1052,7 @@
       if (!cfg) return;
       if (!ensureUI()) return;
       S.cfg = {
-        settings: Object.assign({ bar: 'auto', status: true, hints_chars: 'asdfghjkl;', scroll_step: 84, images: true, font: '' }, cfg.settings || {}),
+        settings: Object.assign({ bar: 'auto', status: true, hints_chars: 'asdfghjkl', scroll_step: 84, images: true, font: '' }, cfg.settings || {}),
         keymap: cfg.keymap || {},
         search: cfg.search || {},
       };

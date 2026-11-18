@@ -32,7 +32,7 @@ extensions = []
 # auto: bar appears on load/command/hint, hides otherwise (best for small screens)
 bar = "auto"
 status = true
-hints_chars = "asdfghjkl;"
+hints_chars = "asdfghjkl"
 scroll_step = 84
 smooth_scroll = false
 images = true
@@ -309,7 +309,7 @@ impl Config {
             "settings": {
                 "bar": self.get_str("bar").unwrap_or("auto"),
                 "status": self.get_bool("status").unwrap_or(true),
-                "hints_chars": self.get_str("hints_chars").unwrap_or("asdfghjkl;"),
+                "hints_chars": self.get_str("hints_chars").unwrap_or("asdfghjkl"),
                 "scroll_step": self.get_i64("scroll_step").unwrap_or(84),
                 "smooth_scroll": self.get_bool("smooth_scroll").unwrap_or(false),
                 "images": self.get_bool("images").unwrap_or(true),

@@ -44,7 +44,7 @@ in
       example = lib.literalExpression ''
         {
           general.search_engine = "wikipedia";
-          general.hints_chars = "jkl;fdsa";
+          general.hints_chars = "jklfdsa";
           keys.normal = { "<C-S-h>" = "history-list"; };
           search.nix = "https://search.nixos.org/packages?query={}";
         }

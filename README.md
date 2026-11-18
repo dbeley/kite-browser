@@ -306,7 +306,7 @@ Pin another engine with `programs.kite.engine = "chromium"`, or
     engine = "ungoogled";           # ungoogled (default) | chromium | chrome
     settings = {
       general.search_engine = "wikipedia";
-      general.hints_chars = "jkl;asdf";
+      general.hints_chars = "jklfdsa";
       keys.normal."<C-S-h>" = "history-list";
       search.nix = "https://search.nixos.org/packages?query={}";
     };
